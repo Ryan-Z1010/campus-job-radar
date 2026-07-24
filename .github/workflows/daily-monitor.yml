@@ -1,0 +1,62 @@
+name: Daily job monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 1 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-job-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+
+      - name: Restore deduplication database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/job_radar.db
+          key: job-radar-db-${{ github.run_id }}
+          restore-keys: |
+            job-radar-db-
+
+      - name: Run monitor
+        env:
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
+        run: |
+          if [ -n "$ALERT_EMAIL" ] && [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_PASSWORD" ]; then
+            python -m job_radar run
+          else
+            python -m job_radar run --dry-run
+          fi
+
+      - name: Save deduplication database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/job_radar.db
+          key: job-radar-db-${{ github.run_id }}
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-radar-report-${{ github.run_id }}
+          path: reports/latest/
+          if-no-files-found: warn
+          retention-days: 14

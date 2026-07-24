@@ -1,0 +1,44 @@
+[
+  {
+    "external_id": "demo-gz-ai-agent-001",
+    "title": "AI智能体开发工程师（2026届）",
+    "company": "某广州国有科技企业",
+    "company_type": "国企",
+    "location": "广州",
+    "description": "面向2026届硕士毕业生，参与大模型应用、Agent工作流和知识库开发，要求熟悉Python与SQL。",
+    "education": "硕士及以上",
+    "graduation_years": [2026],
+    "published_at": "2026-07-24",
+    "deadline": "2026-09-30",
+    "url": "https://example.com/jobs/demo-gz-ai-agent-001",
+    "source_name": "演示岗位数据"
+  },
+  {
+    "external_id": "demo-sh-data-002",
+    "title": "数据科学工程师",
+    "company": "某上海外资企业",
+    "company_type": "外企",
+    "location": "上海",
+    "description": "负责机器学习建模、数据分析和业务实验，熟练使用Python。",
+    "education": "硕士",
+    "graduation_years": [2026, 2027],
+    "published_at": "2026-07-23",
+    "deadline": "2026-10-15",
+    "url": "https://example.com/jobs/demo-sh-data-002",
+    "source_name": "演示岗位数据"
+  },
+  {
+    "external_id": "demo-bj-sales-003",
+    "title": "AI产品销售",
+    "company": "某北京民营企业",
+    "company_type": "私企",
+    "location": "北京",
+    "description": "负责人工智能产品销售与客户拓展。",
+    "education": "本科及以上",
+    "graduation_years": [2026],
+    "published_at": "2026-07-22",
+    "deadline": "2026-08-31",
+    "url": "https://example.com/jobs/demo-bj-sales-003",
+    "source_name": "演示岗位数据"
+  }
+]

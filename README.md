@@ -1,0 +1,121 @@
+# CampusJobRadar
+
+CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控器。它从公开来源采集岗位，统一字段、去重、按个人偏好打分，再生成 HTML/JSON 摘要；配置邮件后可只推送首次出现且达到阈值的岗位。
+
+当前版本是可运行的 MVP，重点解决三件事：
+
+- 不同招聘网站的数据格式不一致；
+- 同一岗位反复出现造成重复提醒；
+- 岗位很多，但真正符合城市、企业类型、方向和毕业时间的岗位很少。
+
+## 已实现
+
+- 统一岗位模型：公司、企业类型、城市、岗位、届别、截止时间、来源链接等；
+- 四类采集器：本地 JSON、公开 JSON API、普通 HTML 链接、招聘启动公告；
+- 已接入南航官网公开校园招聘 API；
+- 基于稳定指纹的 SQLite 去重；
+- 城市、企业类型、关键词、毕业年份的可解释评分；
+- HTML、JSON 和 Excel 可直接打开的 CSV 摘要；
+- SMTP 邮件提醒，凭据只从环境变量读取；
+- 来源可用性审计；
+- 单元测试和 GitHub Actions；
+- 纯 Python 标准库实现，无第三方运行依赖。
+
+## 5 分钟体验
+
+要求 Python 3.9 或更高版本。
+
+```bash
+python -m pip install -e .
+python -m job_radar run --dry-run --include-demo
+```
+
+结果会写入：
+
+- `data/job_radar.db`：去重数据库；
+- `reports/latest/digest.html`：可直接打开的岗位摘要；
+- `reports/latest/jobs.json`：供后续网页或智能体使用的数据。
+- `reports/latest/jobs.csv`：可直接用 Excel 打开的岗位表。
+
+再次执行同一条命令时，新增数量应为 0，这说明去重有效。
+
+## 使用自己的偏好
+
+```bash
+cp configs/profile.example.json configs/profile.local.json
+```
+
+编辑 `profile.local.json`。该文件已被 Git 忽略，不会意外公开。然后运行：
+
+```bash
+python -m job_radar run \
+  --profile configs/profile.local.json \
+  --sources configs/sources.json \
+  --dry-run
+```
+
+演示数据只有加上 `--include-demo` 才会进入流程，因此定时任务不会误发虚构岗位。
+
+对于境外高校毕业时间处于届别交界的情况，可使用
+`review_graduation_years`。例如 2026 年 11 月毕业时，把 2027 放入该数组，
+系统会保留 2027 届岗位并标记为“需核对”，而不是直接判断不符合。
+
+## 邮件提醒
+
+复制 `.env.example` 为 `.env`，填写 SMTP 信息。推荐使用邮箱的“应用专用密码”，不要填写登录密码。确认 dry-run 报告无误后，移除 `--dry-run`：
+
+```bash
+python -m job_radar run \
+  --profile configs/profile.local.json \
+  --sources configs/sources.json
+```
+
+真实凭据、邮箱地址、个人配置、简历、照片和本地数据库都不会被 Git 跟踪。
+QQ 邮箱的本地配置与测试步骤见
+[邮件设置指南](docs/email-setup.md)，配置后可运行
+`python -m job_radar test-email` 单独验证。
+
+## 招聘来源
+
+默认配置保留了首批目标官网。南航专用适配器已经启用，其他动态站点在
+专用适配器完成前保持关闭。可以先运行审计：
+
+```bash
+python -m job_radar audit --sources configs/sources.json
+```
+
+请阅读 [来源审计](docs/source-audit.md) 和 [新增来源指南](docs/add-a-source.md)。项目只处理无需登录即可访问的公开信息，不绕过验证码、登录、访问控制或站点限制。
+
+## GitHub 自动运行
+
+仓库包含两个工作流：
+
+- `ci.yml`：每次推送和 Pull Request 执行测试；
+- `daily-monitor.yml`：北京时间每天约 09:17 执行，也支持手动触发。
+
+定时任务会在存在完整邮件 Secrets 时发送邮件，否则自动 dry-run。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
+
+## 项目结构
+
+```text
+configs/                 示例偏好与来源配置
+data/                    演示数据；运行数据库被忽略
+src/job_radar/           采集、清洗、评分、存储、通知与 CLI
+tests/                   单元和端到端测试
+docs/                    架构、来源与部署文档
+.github/workflows/       CI 与每日监控
+```
+
+## 边界与免责声明
+
+CampusJobRadar 不是投递机器人，不会代替用户登录或提交简历。岗位状态、毕业时间、专业要求和截止日期最终以招聘单位官网为准。使用者应遵守目标站点的服务条款、robots 规则、访问频率和适用法律；站点要求停止时应立即停用对应采集器。
+
+## 路线图
+
+- 完成南方电网、中国移动、南航、广汽和小鹏的专用适配器；
+- 增加 RSS/微信公众号“人工转录入口”和变更检测；
+- 生成可部署的静态岗位看板；
+- 增加截止日期提醒和申请状态跟踪；
+- 可选接入大模型，对模糊 JD 做解释性分类，但不让模型替代硬性资格规则。
+
+欢迎阅读 [贡献指南](CONTRIBUTING.md) 后提交新的公开来源适配器。

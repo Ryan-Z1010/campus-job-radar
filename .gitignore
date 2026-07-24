@@ -1,0 +1,20 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+.venv/
+venv/
+
+# Personal and runtime data
+.env
+configs/profile.local.json
+data/job_radar.db
+data/*.sqlite*
+reports/
+
+# Existing private workspace artifacts (resume, photo, trackers)
+output/
+outputs/
+tmp/

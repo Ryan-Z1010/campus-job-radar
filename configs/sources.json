@@ -1,0 +1,92 @@
+{
+  "sources": [
+    {
+      "id": "demo_official_jobs",
+      "name": "演示岗位数据",
+      "type": "fixture_json",
+      "enabled": true,
+      "demo": true,
+      "path": "data/demo_jobs.json"
+    },
+    {
+      "id": "china_southern_power_grid",
+      "name": "中国南方电网",
+      "type": "html_links",
+      "enabled": false,
+      "homepage": "https://zhaopin.csg.cn/",
+      "company": "中国南方电网",
+      "company_type": "央企",
+      "include_keywords": ["数据", "人工智能", "算法", "计算机", "软件"],
+      "note": "动态站点，已识别 /webPost/search 接口，需在第二阶段完成专用请求参数适配。"
+    },
+    {
+      "id": "china_mobile",
+      "name": "中国移动",
+      "type": "html_links",
+      "enabled": false,
+      "homepage": "https://job.10086.cn/",
+      "company": "中国移动",
+      "company_type": "央企",
+      "include_keywords": ["大数据", "人工智能", "算法", "系统开发"],
+      "note": "官网公开职位采用动态请求与摘要签名，先保留审计，不绕过站点机制。"
+    },
+    {
+      "id": "china_southern_airlines",
+      "name": "中国南方航空",
+      "type": "json_api",
+      "enabled": true,
+      "homepage": "https://job.csair.com/",
+      "url": "https://job.csair.com/api/front/findPositions",
+      "method": "POST",
+      "request_json": {
+        "jobType": "3",
+        "keyWord": "",
+        "workPlace": "",
+        "beginDate": "",
+        "endDate": "",
+        "showExpired": false,
+        "pkPostseries": "",
+        "employOrg": "",
+        "isIndex": false,
+        "pageNum": 1,
+        "pageSize": 100
+      },
+      "list_path": "list",
+      "company": "中国南方航空",
+      "company_type": "央企",
+      "field_map": {
+        "external_id": "pkPublish",
+        "title": "jobName",
+        "company": "orgName",
+        "location": "workPlace",
+        "description": "postseriesName",
+        "published_at": "publishDate",
+        "deadline": "endDate"
+      },
+      "url_template": "https://job.csair.com/#/hotJobDetail?id={pkPublish}&type={jobType}&key=2",
+      "note": "已接入官网公开 JSON API，并固定 jobType=3，只采集校园招聘。"
+    },
+    {
+      "id": "gac_group",
+      "name": "广汽集团",
+      "type": "html_links",
+      "enabled": false,
+      "homepage": "https://www.gacgroup.com/cn/talent",
+      "company": "广汽集团",
+      "company_type": "国企",
+      "include_keywords": ["招聘", "校招", "数据", "人工智能"],
+      "note": "官方人才页可访问；已确认2026校招专题，等待2027正式专题入口后接入。"
+    },
+    {
+      "id": "xpeng",
+      "name": "小鹏汽车",
+      "type": "html_links",
+      "enabled": false,
+      "homepage": "https://job.xiaopeng.com/",
+      "company": "小鹏汽车",
+      "company_type": "私企",
+      "include_keywords": ["数据", "人工智能", "算法", "大模型"],
+      "note": "当前执行环境 DNS 无法解析该招聘域名，需要从浏览器或新入口复核。"
+    }
+  ]
+}
