@@ -279,10 +279,15 @@ class _LinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: List[Dict[str, str]] = []
+        self.text_parts: List[str] = []
         self._href = ""
         self._parts: List[str] = []
+        self._ignored_depth = 0
 
     def handle_starttag(self, tag: str, attrs: Iterable[Any]) -> None:
+        if tag.lower() in {"script", "style"}:
+            self._ignored_depth += 1
+            return
         if tag.lower() != "a":
             return
         values = dict(attrs)
@@ -290,14 +295,77 @@ class _LinkParser(HTMLParser):
         self._parts = []
 
     def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
+        self.text_parts.append(data)
         if self._href:
             self._parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style"}:
+            self._ignored_depth = max(0, self._ignored_depth - 1)
+            return
         if tag.lower() == "a" and self._href:
             self.links.append({"href": self._href, "text": " ".join(self._parts)})
             self._href = ""
             self._parts = []
+
+
+class CampaignWatchCollector(Collector):
+    """Emit one notice when an official page announces a target campaign."""
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        body = fetch_bytes(homepage).decode("utf-8", errors="replace")
+        parser = _LinkParser()
+        parser.feed(body)
+        visible_text = " ".join(" ".join(parser.text_parts).split())
+
+        required_text = self.source.get("required_text", "")
+        if required_text and required_text not in visible_text:
+            raise ValueError("活动监控页未出现预期标识，可能已经改版")
+
+        target_keywords = self.source.get("target_keywords", [])
+        compacted_text = "".join(visible_text.lower().split())
+        matched_keyword = next(
+            (
+                keyword
+                for keyword in target_keywords
+                if "".join(keyword.lower().split()) in compacted_text
+            ),
+            "",
+        )
+        if not matched_keyword:
+            return []
+
+        link_keywords = list(self.source.get("link_keywords", []))
+        link_keywords.append(matched_keyword)
+        campaign_url = homepage
+        for link in parser.links:
+            candidate_text = " ".join(link["text"].split())
+            searchable = "{} {}".format(candidate_text, link["href"]).lower()
+            if any(keyword.lower() in searchable for keyword in link_keywords):
+                campaign_url = urljoin(homepage, link["href"])
+                break
+
+        values = {
+            "external_id": self.source.get(
+                "external_id",
+                "{}:{}".format(self.source["id"], matched_keyword),
+            ),
+            "title": self.source["title"],
+            "company": self.source.get("company", self.source["name"]),
+            "company_type": self.source.get("company_type", "未知"),
+            "location": self.source.get("location", "待核对"),
+            "description": self.source.get("description", ""),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self.source.get("published_at", ""),
+            "deadline": self.source.get("deadline", ""),
+            "url": campaign_url,
+            "source_name": self.source["name"],
+        }
+        return [JobPosting.from_mapping(values)]
 
 
 class HtmlLinksCollector(Collector):
@@ -331,6 +399,7 @@ class HtmlLinksCollector(Collector):
 
 
 COLLECTOR_TYPES = {
+    "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
     "json_api": JsonApiCollector,

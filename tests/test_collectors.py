@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_radar.collectors import (
+    CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
     JsonApiCollector,
     WebNoticeCollector,
@@ -11,6 +12,59 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_campaign_watch_returns_empty_before_launch(self, fetch):
+        fetch.return_value = (
+            "<main><h2>招聘信息</h2><p>校园招聘敬请期待</p></main>"
+            '<script>const nextCampaign = "2027校园招聘"</script>'
+        ).encode("utf-8")
+        source = {
+            "id": "gac",
+            "name": "广汽集团",
+            "type": "campaign_watch",
+            "homepage": "https://example.com/talent",
+            "required_text": "招聘信息",
+            "target_keywords": ["2027校园招聘"],
+            "title": "广汽集团2027校园招聘已启动",
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_campaign_watch_emits_official_launch_link_once_keyword_appears(
+        self, fetch
+    ):
+        fetch.return_value = (
+            '<main><h2>招聘信息</h2><a href="https://campus.example.com/2027">'
+            "广汽集团2027 届校园招聘</a></main>"
+        ).encode("utf-8")
+        source = {
+            "id": "gac",
+            "name": "广汽集团",
+            "type": "campaign_watch",
+            "homepage": "https://example.com/talent",
+            "required_text": "招聘信息",
+            "target_keywords": ["2027届校园招聘"],
+            "link_keywords": ["2027"],
+            "external_id": "gac-campus-2027-launch",
+            "title": "广汽集团2027校园招聘已启动",
+            "company": "广汽集团",
+            "company_type": "国企",
+            "location": "广州",
+            "graduation_years": [2027],
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "gac-campus-2027-launch")
+        self.assertEqual(
+            jobs[0].url, "https://campus.example.com/2027"
+        )
+        self.assertEqual(jobs[0].graduation_years, [2027])
+
     @patch("job_radar.collectors.fetch_bytes")
     def test_csg_anonymous_session_and_job_mapping(self, fetch):
         fixture = (

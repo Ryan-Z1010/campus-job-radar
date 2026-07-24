@@ -96,3 +96,26 @@ Token 或用于绕过访问控制的字段。
 南方电网适配器遵循官网前端的 `guestLogin` 流程：每次运行新建匿名会话，
 随后请求 `/webPost/search`。令牌只保存在当前进程内存中，不写入配置、
 fixture、日志、报告或数据库。测试 fixture 中只能使用虚构令牌与脱敏岗位。
+
+## 招聘启动监控
+
+当下一届校招专题尚未发布时，不要猜测专题域名，也不要把上一届页面当成
+当前岗位源。`campaign_watch` 会检查招聘单位官网是否出现目标届别；未出现
+时正常返回空结果，出现后生成一次启动提醒，并优先采用官网页面中匹配到的
+正式链接。
+
+```json
+{
+  "id": "example_campaign",
+  "name": "示例公司",
+  "type": "campaign_watch",
+  "enabled": true,
+  "homepage": "https://example.com/talent",
+  "required_text": "招聘信息",
+  "target_keywords": ["2027校园招聘", "2027届校招"],
+  "link_keywords": ["2027"],
+  "external_id": "example-campus-2027-launch",
+  "title": "示例公司2027校园招聘已启动",
+  "graduation_years": [2027]
+}
+```
