@@ -5,13 +5,13 @@ from abc import ABC, abstractmethod
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 
 from .models import JobPosting
 
 
-USER_AGENT = "CampusJobRadar/0.1 (+https://github.com/your-name/campus-job-radar)"
+USER_AGENT = "CampusJobRadar/0.1 (+https://github.com/Ryan-Z1010/campus-job-radar)"
 
 
 def fetch_bytes(
@@ -109,6 +109,141 @@ class JsonApiCollector(Collector):
         return jobs
 
 
+class ChinaSouthernPowerGridCollector(Collector):
+    """Collect public vacancies through CSG's anonymous website session."""
+
+    DEFAULT_GUEST_TOKEN_URL = (
+        "https://zhaopin.csg.cn/hrcommonauthentication/service/"
+        "authLoginParam/guest/getGuestToken"
+    )
+    DEFAULT_SEARCH_URL = (
+        "https://zhaopin.csg.cn/recruitment-dmz/service/webPost/search"
+    )
+    DEFAULT_REQUEST = {
+        "pageNo": 1,
+        "pageSize": 100,
+        "keyword": "",
+        "orgId": "",
+        "postLocation": "",
+        "educationReq": "",
+        "postType": "",
+        "professionId": "",
+        "postName": "",
+        "activityId": "",
+    }
+
+    @staticmethod
+    def _decode_response(raw: bytes, label: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("南方电网{}返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("南方电网{}响应结构异常".format(label))
+        if payload.get("code") != 200:
+            raise ValueError(
+                "南方电网{}失败（code={}）".format(label, payload.get("code"))
+            )
+        return payload
+
+    @staticmethod
+    def _first_value(item: Dict[str, Any], *fields: str) -> Any:
+        for field in fields:
+            value = item.get(field)
+            if value not in (None, ""):
+                return value
+        return ""
+
+    def _guest_token(self) -> str:
+        raw = fetch_bytes(
+            self.source.get("guest_token_url", self.DEFAULT_GUEST_TOKEN_URL),
+            method="POST",
+            json_body={},
+            headers=None,
+        )
+        payload = self._decode_response(raw, "匿名会话")
+        data = payload.get("data")
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token:
+            raise ValueError("南方电网匿名会话响应缺少访问令牌")
+        return token
+
+    def _search_page(
+        self, token: str, request_json: Dict[str, Any], page_no: int
+    ) -> Dict[str, Any]:
+        body = dict(request_json)
+        body["pageNo"] = page_no
+        raw = fetch_bytes(
+            self.source.get("url", self.DEFAULT_SEARCH_URL),
+            method="POST",
+            json_body=body,
+            headers={"Authorization": "Bearer {}".format(token)},
+        )
+        payload = self._decode_response(raw, "岗位搜索")
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("list"), list):
+            raise ValueError("南方电网岗位搜索响应缺少 data.list 数组")
+        return data
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        external_id = self._first_value(item, "id", "postId")
+        homepage = self.source.get("homepage", "https://zhaopin.csg.cn/")
+        detail_url = "{}/#/post-list-detail?gobackUrl=/job-list&postId={}&canback=no".format(
+            homepage.rstrip("/"),
+            quote(str(external_id), safe=""),
+        )
+        values = {
+            "external_id": external_id,
+            "title": self._first_value(item, "postName", "title"),
+            "company": self._first_value(item, "orgName", "companyName"),
+            "company_type": self.source.get("company_type", "央企"),
+            "location": self._first_value(
+                item, "postLocationName", "workLocationName", "location"
+            ),
+            "description": self._first_value(
+                item, "postTypeName", "professionName", "description"
+            ),
+            "education": self._first_value(
+                item, "educationRequireName", "educationName"
+            ),
+            "published_at": self._first_value(
+                item, "publishTime", "releaseTime", "createTime"
+            ),
+            "deadline": self._first_value(
+                item, "deliverDeadLineTime", "deadline"
+            ),
+            "url": detail_url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        if not values["company"]:
+            values["company"] = self.source.get("company", "中国南方电网")
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        token = self._guest_token()
+        request_json = dict(self.DEFAULT_REQUEST)
+        request_json.update(self.source.get("request_json", {}))
+        page_size = max(1, int(request_json.get("pageSize", 100)))
+        request_json["pageSize"] = page_size
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+
+        items: List[Dict[str, Any]] = []
+        for page_no in range(1, max_pages + 1):
+            data = self._search_page(token, request_json, page_no)
+            page_items = data["list"]
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("南方电网岗位搜索列表元素结构异常")
+            items.extend(page_items)
+            try:
+                total = int(data.get("count", len(items)))
+            except (TypeError, ValueError):
+                total = len(items)
+            if not page_items or len(items) >= total or len(page_items) < page_size:
+                break
+
+        return [self._to_job(item) for item in items]
+
+
 class _MissingValueDict(dict):
     def __missing__(self, key: str) -> str:
         return ""
@@ -196,6 +331,7 @@ class HtmlLinksCollector(Collector):
 
 
 COLLECTOR_TYPES = {
+    "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,

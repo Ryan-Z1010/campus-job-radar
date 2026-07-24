@@ -1,11 +1,108 @@
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from job_radar.collectors import JsonApiCollector, WebNoticeCollector
+from job_radar.collectors import (
+    ChinaSouthernPowerGridCollector,
+    JsonApiCollector,
+    WebNoticeCollector,
+)
 
 
 class CollectorTests(unittest.TestCase):
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_csg_anonymous_session_and_job_mapping(self, fetch):
+        fixture = (
+            Path(__file__).parent / "fixtures" / "csg_search_response.json"
+        ).read_bytes()
+        fetch.side_effect = [
+            json.dumps(
+                {"code": 200, "data": {"access_token": "temporary-token"}}
+            ).encode("utf-8"),
+            fixture,
+        ]
+        source = {
+            "id": "csg",
+            "name": "中国南方电网",
+            "type": "csg_api",
+            "homepage": "https://zhaopin.csg.cn/",
+            "guest_token_url": "https://example.com/guest",
+            "url": "https://example.com/search",
+            "company": "中国南方电网",
+            "company_type": "央企",
+            "request_json": {"pageSize": 100, "keyword": ""},
+        }
+
+        jobs = ChinaSouthernPowerGridCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].title, "人工智能算法工程师")
+        self.assertEqual(jobs[0].company, "南方电网数字电网集团有限公司")
+        self.assertEqual(jobs[0].location, "广东省/广州市")
+        self.assertEqual(jobs[0].education, "硕士研究生")
+        self.assertEqual(jobs[0].external_id, "example-post-001")
+        self.assertEqual(
+            jobs[0].url,
+            "https://zhaopin.csg.cn/#/post-list-detail"
+            "?gobackUrl=/job-list&postId=example-post-001&canback=no",
+        )
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs,
+            {"method": "POST", "json_body": {}, "headers": None},
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["headers"],
+            {"Authorization": "Bearer temporary-token"},
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["json_body"]["pageNo"], 1
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_csg_rejects_failed_anonymous_session_without_exposing_body(
+        self, fetch
+    ):
+        fetch.return_value = json.dumps(
+            {
+                "code": 500,
+                "message": "temporary-token-should-not-be-reported",
+            }
+        ).encode("utf-8")
+        source = {"id": "csg", "name": "中国南方电网", "type": "csg_api"}
+
+        with self.assertRaisesRegex(
+            ValueError, r"南方电网匿名会话失败（code=500）"
+        ) as raised:
+            ChinaSouthernPowerGridCollector(source).collect()
+
+        self.assertNotIn(
+            "temporary-token-should-not-be-reported", str(raised.exception)
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_csg_empty_result_is_successful(self, fetch):
+        fetch.side_effect = [
+            json.dumps(
+                {"code": 200, "data": {"access_token": "temporary-token"}}
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "code": 200,
+                    "message": "操作成功",
+                    "data": {"pageNo": 0, "count": 0, "list": []},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+        source = {"id": "csg", "name": "中国南方电网", "type": "csg_api"}
+
+        jobs = ChinaSouthernPowerGridCollector(source).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
+
     @patch("job_radar.collectors.fetch_bytes")
     def test_post_json_api_mapping_and_url_template(self, fetch):
         fetch.return_value = json.dumps(

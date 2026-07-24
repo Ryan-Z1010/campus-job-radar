@@ -11,13 +11,27 @@
     {
       "id": "china_southern_power_grid",
       "name": "中国南方电网",
-      "type": "html_links",
-      "enabled": false,
+      "type": "csg_api",
+      "enabled": true,
       "homepage": "https://zhaopin.csg.cn/",
+      "guest_token_url": "https://zhaopin.csg.cn/hrcommonauthentication/service/authLoginParam/guest/getGuestToken",
+      "url": "https://zhaopin.csg.cn/recruitment-dmz/service/webPost/search",
+      "request_json": {
+        "pageNo": 1,
+        "pageSize": 100,
+        "keyword": "",
+        "orgId": "",
+        "postLocation": "",
+        "educationReq": "",
+        "postType": "",
+        "professionId": "",
+        "postName": "",
+        "activityId": ""
+      },
+      "max_pages": 20,
       "company": "中国南方电网",
       "company_type": "央企",
-      "include_keywords": ["数据", "人工智能", "算法", "计算机", "软件"],
-      "note": "动态站点，已识别 /webPost/search 接口，需在第二阶段完成专用请求参数适配。"
+      "note": "已接入官网前端使用的公开匿名会话与 /webPost/search 接口；令牌仅在单次运行内存中使用。"
     },
     {
       "id": "china_mobile",
