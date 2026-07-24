@@ -1,0 +1,20 @@
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "pageNo": 1,
+    "count": 1,
+    "list": [
+      {
+        "id": "example-post-001",
+        "postName": "人工智能算法工程师",
+        "orgName": "南方电网数字电网集团有限公司",
+        "postLocationName": "广东省/广州市",
+        "educationRequireName": "硕士研究生",
+        "postTypeName": "信息通信类",
+        "publishTime": "2026-08-01 09:00:00",
+        "deliverDeadLineTime": "2026-09-30 23:59:59"
+      }
+    ]
+  }
+}
