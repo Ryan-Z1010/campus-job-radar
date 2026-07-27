@@ -71,6 +71,34 @@ Token 或用于绕过访问控制的字段。
 和投递入口，确保用户不会错过启动时间；站点以后提供稳定公开接口时再接
 岗位明细。
 
+## 公开公告 JSON
+
+有些官网使用公开 JSON 渲染公告列表，但没有开放稳定的岗位明细接口。
+`notice_json` 可以只筛选目标届别的正式校招公告，并排除实习、社招和录用
+结果。当前字段约定适用于标题为 `text3`、招聘单位为 `text1`、发布时间为
+`text4`、截止时间为 `text5` 的公告列表：
+
+```json
+{
+  "id": "example_notice",
+  "name": "示例公司",
+  "type": "notice_json",
+  "enabled": true,
+  "homepage": "https://careers.example.com/",
+  "url": "https://careers.example.com/notices.json",
+  "list_path": "data.list",
+  "company": "示例公司",
+  "company_prefix": "示例公司",
+  "company_type": "央企",
+  "target_keywords": ["2027校园招聘", "2027届校招"],
+  "exclude_keywords": ["实习", "社会招聘", "拟录用", "录用结果"],
+  "graduation_years": [2027]
+}
+```
+
+公告标题中的简单 HTML（例如 `<br>`）会转换为普通文本。匹配不到目标届别
+时返回空结果；`list_path` 不存在或不指向数组时会报告结构错误。
+
 ## 普通 HTML
 
 `html_links` 会读取页面中的 `<a>`，按标题关键词筛选。它适合公告列表或服务端渲染的岗位列表，不适合只返回空壳 HTML 的 SPA。

@@ -36,13 +36,41 @@
     {
       "id": "china_mobile",
       "name": "中国移动",
-      "type": "html_links",
-      "enabled": false,
+      "type": "notice_json",
+      "enabled": true,
       "homepage": "https://job.10086.cn/",
+      "url": "https://job.10086.cn/personal/notice/5044401_11161_21137.json",
+      "list_path": "cData.list",
       "company": "中国移动",
+      "company_prefix": "中国移动",
       "company_type": "央企",
-      "include_keywords": ["大数据", "人工智能", "算法", "系统开发"],
-      "note": "官网公开职位采用动态请求与摘要签名，先保留审计，不绕过站点机制。"
+      "location": "待核对",
+      "location_map": {
+        "广东": "广东省",
+        "上海": "上海",
+        "深圳": "深圳",
+        "北京": "北京"
+      },
+      "target_keywords": [
+        "2027校园招聘",
+        "2027届校园招聘",
+        "2027年校园招聘",
+        "2027秋季校园招聘",
+        "2027年秋季校园招聘",
+        "2027届秋季校园招聘",
+        "2027秋季校招",
+        "2027年秋季校招",
+        "2027届秋季校招",
+        "2027届校招",
+        "2027年校招",
+        "2027秋招",
+        "2027届秋招"
+      ],
+      "exclude_keywords": ["实习", "社会招聘", "社招", "拟录用", "录用结果"],
+      "description": "中国移动2027校园招聘启动提醒；请进入官网优先核对人工智能、数据、大数据、算法、软件及计算机相关岗位。",
+      "education": "应届毕业生，具体学历和毕业时间要求以公告为准",
+      "graduation_years": [2027],
+      "note": "已接入官网首页公开读取的静态公告 JSON，只监控2027正式校园招聘并排除实习、社招和录用结果；职位明细接口仍不复制签名机制。"
     },
     {
       "id": "china_southern_airlines",

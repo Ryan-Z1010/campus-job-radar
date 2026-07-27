@@ -7,11 +7,97 @@ from job_radar.collectors import (
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
     JsonApiCollector,
+    NoticeJsonCollector,
     WebNoticeCollector,
 )
 
 
 class CollectorTests(unittest.TestCase):
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_notice_json_filters_and_maps_campaign_announcements(self, fetch):
+        fixture = (
+            Path(__file__).parent / "fixtures" / "china_mobile_notices.json"
+        ).read_bytes()
+        fetch.return_value = fixture
+        source = {
+            "id": "china_mobile",
+            "name": "中国移动",
+            "type": "notice_json",
+            "homepage": "https://job.10086.cn/",
+            "url": "https://job.10086.cn/personal/notice/notices.json",
+            "list_path": "cData.list",
+            "company": "中国移动",
+            "company_prefix": "中国移动",
+            "company_type": "央企",
+            "location": "待核对",
+            "location_map": {"广东": "广东省"},
+            "target_keywords": ["2027届校园招聘", "2027届校招"],
+            "exclude_keywords": ["实习", "社会招聘", "录用结果"],
+            "description": "请核对人工智能、数据和算法岗位。",
+            "education": "应届毕业生，具体要求以公告为准",
+            "graduation_years": [2027],
+        }
+
+        jobs = NoticeJsonCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "notice-2027-campus")
+        self.assertEqual(jobs[0].title, "广东公司 2027届校园招聘正式启动")
+        self.assertEqual(jobs[0].company, "中国移动广东公司")
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "广东省")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-08-20 09:00:00")
+        self.assertEqual(jobs[0].deadline, "2026-10-31 23:59:59")
+        self.assertEqual(
+            jobs[0].url,
+            "https://job.10086.cn/personal/notice/detail.html?id=2027",
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_notice_json_returns_empty_before_target_campaign(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "cData": {
+                    "list": [
+                        {
+                            "_orderId": "notice-2026-spring",
+                            "text1": "中移金科",
+                            "text3": "中移金科2026春季校园招聘全面启动",
+                            "detail_href": "/personal/notice/2026.html",
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        source = {
+            "id": "china_mobile",
+            "name": "中国移动",
+            "type": "notice_json",
+            "url": "https://example.com/notices.json",
+            "list_path": "cData.list",
+            "target_keywords": ["2027届校园招聘"],
+        }
+
+        self.assertEqual(NoticeJsonCollector(source).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_notice_json_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps({"cData": {}}).encode("utf-8")
+        source = {
+            "id": "china_mobile",
+            "name": "中国移动",
+            "type": "notice_json",
+            "url": "https://example.com/notices.json",
+            "list_path": "cData.list",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "公告 JSON 来源的 list_path 不存在"
+        ):
+            NoticeJsonCollector(source).collect()
+
     @patch("job_radar.collectors.fetch_bytes")
     def test_campaign_watch_returns_empty_before_launch(self, fetch):
         fetch.return_value = (
