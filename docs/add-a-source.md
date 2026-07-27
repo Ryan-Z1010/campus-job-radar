@@ -150,6 +150,40 @@ Token 或用于绕过访问控制的字段。
 结构变化或公开 HTML 只包含部分岗位时，采集器会报告来源错误，不会静默
 产生“没有新岗位”的假象。
 
+## Hotjob 公开校招岗位
+
+部分大易/Hotjob 招聘门户会由公开校招页面直接以表单 POST 请求分页岗位。
+只有确认请求来自官网公开页面、且不依赖登录态、验证码、私有令牌或签名时，
+才可使用 `hotjob_campus`：
+
+```json
+{
+  "id": "example_hotjob",
+  "name": "示例集团",
+  "type": "hotjob_campus",
+  "enabled": true,
+  "homepage": "https://wecruit.hotjob.cn/TENANT/pb/school.html",
+  "url": "https://wecruit.hotjob.cn/wecruit/positionInfo/listPosition/TENANT?iSaJAx=isAjax&request_locale=zh_CN",
+  "tenant_id": "TENANT",
+  "recruit_type": 1,
+  "page_size": 15,
+  "max_pages": 20,
+  "company": "示例集团",
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "min_published_at": "2026-07-01",
+  "target_keywords": ["2027校园招聘", "2027届校园招聘", "2027秋招"],
+  "include_keywords": ["AI", "人工智能", "数据", "算法", "数字化"],
+  "exclude_keywords": ["实习", "社会招聘", "销售", "客服"],
+  "graduation_years": [2027],
+  "url_template": "https://wecruit.hotjob.cn/TENANT/pb/posDetail.html?postId={postId}&postType=campus"
+}
+```
+
+采集器按 `totalPage` 逐页请求，超过 `max_pages` 会失败并提醒人工核对。正式
+届别应优先依据 `projectName`，再同时使用 `publishFirstDate` 设置周期下限；
+不能仅凭岗位仍在线或截止日期较晚，就把上一届岗位判断为新一届岗位。
+
 ## 公开匿名会话 API
 
 有些官网会先为所有访客签发短期匿名令牌，再调用公开岗位接口。只有在

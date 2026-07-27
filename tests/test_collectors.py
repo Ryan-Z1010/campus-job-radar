@@ -11,6 +11,7 @@ from job_radar.collectors import (
     ChinaSouthernPowerGridCollector,
     GdutCampusNoticeCollector,
     GzRecruitCompanyCollector,
+    HotjobCampusCollector,
     JsonApiCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
@@ -19,6 +20,156 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _hotjob_source():
+        return {
+            "id": "yuexiu_group",
+            "name": "越秀集团",
+            "type": "hotjob_campus",
+            "homepage": (
+                "https://wecruit.hotjob.cn/"
+                "SU-target/pb/school.html"
+            ),
+            "tenant_id": "SU-target",
+            "company": "越秀集团",
+            "company_type": "国企",
+            "target_keywords": ["2027届校园招聘", "2027校园招聘"],
+            "include_keywords": ["AI", "数据", "数字化", "信息技术"],
+            "exclude_keywords": ["实习", "销售", "社会招聘"],
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "min_published_at": "2026-07-01",
+            "graduation_years": [2027],
+            "max_pages": 3,
+            "url_template": (
+                "https://wecruit.hotjob.cn/SU-target/pb/"
+                "posDetail.html?postId={postId}&postType=campus"
+            ),
+        }
+
+    @staticmethod
+    def _hotjob_page(items, current_page=1, total_page=1):
+        return json.dumps(
+            {
+                "state": "200",
+                "type": "success",
+                "data": {
+                    "pageForm": {
+                        "currentPage": current_page,
+                        "totalPage": total_page,
+                        "pageSize": 15,
+                        "dataCount": len(items),
+                        "pageData": items,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hotjob_campus_paginates_and_maps_target_jobs(self, fetch):
+        fetch.side_effect = [
+            self._hotjob_page(
+                [
+                    {
+                        "postId": "yx-2026",
+                        "postName": "管培生（数字化方向）",
+                        "projectName": "2026届校园招聘",
+                        "postTypeName": "IT类",
+                        "company": "越秀交通",
+                        "department": "数字化部",
+                        "workPlaceStr": "广州市-天河区",
+                        "educationStr": "硕士研究生及以上",
+                        "publishFirstDate": "2026-03-18 00:00:00",
+                        "endDate": "2026-06-18 23:59:59",
+                    }
+                ],
+                current_page=1,
+                total_page=2,
+            ),
+            self._hotjob_page(
+                [
+                    {
+                        "postId": "yx-data-2027",
+                        "postName": "数据平台工程师",
+                        "projectName": "2027届校园招聘",
+                        "postTypeName": "IT信息技术类",
+                        "company": "越秀集团总部",
+                        "department": "数字科技部",
+                        "workPlaceStr": "广州市-天河区",
+                        "educationStr": "硕士研究生及以上",
+                        "publishFirstDate": "2026-08-20 09:30:00",
+                        "endDate": "2026-10-15 23:59:59",
+                    },
+                    {
+                        "postId": "yx-sales-2027",
+                        "postName": "数据产品销售",
+                        "projectName": "2027届校园招聘",
+                        "postTypeName": "销售类",
+                        "company": "越秀集团",
+                        "workPlaceStr": "广州市",
+                        "publishFirstDate": "2026-08-20 09:30:00",
+                    },
+                ],
+                current_page=2,
+                total_page=2,
+            ),
+        ]
+
+        jobs = HotjobCampusCollector(self._hotjob_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "yx-data-2027")
+        self.assertEqual(jobs[0].title, "数据平台工程师")
+        self.assertEqual(jobs[0].company, "越秀集团总部")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州市-天河区")
+        self.assertEqual(jobs[0].education, "硕士研究生及以上")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-08-20 09:30:00")
+        self.assertEqual(jobs[0].deadline, "2026-10-15 23:59:59")
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://wecruit.hotjob.cn/SU-target/pb/"
+                "posDetail.html?postId=yx-data-2027&postType=campus"
+            ),
+        )
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["form_body"]["currentPage"], 2
+        )
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs["headers"]["Referer"],
+            self._hotjob_source()["homepage"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hotjob_campus_returns_empty_before_target_cycle(self, fetch):
+        fetch.return_value = self._hotjob_page(
+            [
+                {
+                    "postId": "yx-2026",
+                    "postName": "管培生（数字化方向）",
+                    "projectName": "2026届校园招聘",
+                    "postTypeName": "IT类",
+                    "company": "越秀交通",
+                    "workPlaceStr": "广州市",
+                    "publishFirstDate": "2026-03-18 00:00:00",
+                }
+            ]
+        )
+
+        self.assertEqual(HotjobCampusCollector(self._hotjob_source()).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hotjob_campus_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {"state": "200", "data": {"pageForm": {}}}
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
+            HotjobCampusCollector(self._hotjob_source()).collect()
+
     @staticmethod
     def _gdut_page(fragment):
         wrapped_html = ("H" * 17 + fragment).encode("utf-8")
