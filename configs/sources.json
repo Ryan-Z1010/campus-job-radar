@@ -106,14 +106,22 @@
     },
     {
       "id": "xpeng",
-      "name": "小鹏汽车",
-      "type": "html_links",
-      "enabled": false,
-      "homepage": "https://job.xiaopeng.com/",
-      "company": "小鹏汽车",
+      "name": "小鹏集团",
+      "type": "web_notice",
+      "enabled": true,
+      "homepage": "https://xiaopeng.jobs.feishu.cn/campus/position/list",
+      "url": "https://xiaopeng.jobs.feishu.cn/398875",
+      "required_text": "2026年9月-2027年8月",
+      "external_id": "xpeng-explorer-campus-2027",
+      "title": "小鹏集团2027届「探索者计划」全球校园招聘",
+      "company": "小鹏集团",
       "company_type": "私企",
-      "include_keywords": ["数据", "人工智能", "算法", "大模型"],
-      "note": "当前执行环境 DNS 无法解析该招聘域名，需要从浏览器或新入口复核。"
+      "location": "广州、深圳、上海、北京等（以具体岗位为准）",
+      "description": "官网已启动2027届探索者计划；请优先核对人工智能、数据智能、算法、软件、芯片和机器人相关岗位。毕业时间覆盖2026年9月至2027年8月，每人最多可投递3个岗位。",
+      "education": "国内外应届毕业生，具体学历要求以岗位为准",
+      "graduation_years": [2027],
+      "deadline": "招满即止",
+      "note": "小鹏官网已改为飞书招聘入口；官网页面明确覆盖2026年9月至2027年8月毕业生。岗位接口带前端签名与CSRF校验，因此先接入官方活动公告，不复制签名算法。"
     }
   ]
 }

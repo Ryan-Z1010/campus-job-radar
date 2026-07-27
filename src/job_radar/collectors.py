@@ -269,7 +269,7 @@ class WebNoticeCollector(Collector):
             "graduation_years": self.source.get("graduation_years", []),
             "published_at": self.source.get("published_at", ""),
             "deadline": self.source.get("deadline", ""),
-            "url": homepage,
+            "url": self.source.get("url", homepage),
             "source_name": self.source["name"],
         }
         return [JobPosting.from_mapping(values)]

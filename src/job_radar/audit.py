@@ -18,7 +18,13 @@ def audit_sources(sources: List[Dict[str, Any]], timeout: int = 15) -> List[Dict
             )
             continue
         started = time.monotonic()
-        request = Request(url, headers={"User-Agent": USER_AGENT})
+        request = Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+            },
+        )
         try:
             with urlopen(request, timeout=timeout) as response:
                 content_type = response.headers.get("Content-Type", "")
