@@ -101,6 +101,38 @@
       "note": "集团官网和自建招聘站对脚本请求返回412；已改用中国电信官方公告明确列出的前程无忧合作专题做届别启动监控，不绕过访问控制。当前专题仍为2026春招时正常返回空结果。"
     },
     {
+      "id": "china_unicom_guangdong",
+      "name": "中国联通广东省分公司",
+      "type": "zhaopin_campus_company",
+      "enabled": true,
+      "homepage": "https://xiaoyuan.zhaopin.com/company/KA0145093017D90000138000",
+      "company_number": "KA0145093017D90000138000",
+      "company": "中国联通广东省分公司",
+      "company_type": "央企",
+      "min_first_published_at": "2026-07-01",
+      "work_types": ["校园"],
+      "include_keywords": [
+        "AI",
+        "人工智能",
+        "数据",
+        "大数据",
+        "云计算",
+        "算法",
+        "软件",
+        "开发",
+        "研发",
+        "数字化",
+        "信息化",
+        "产业互联网",
+        "网络安全",
+        "机器学习",
+        "智能"
+      ],
+      "exclude_keywords": ["销售", "客服", "营业"],
+      "graduation_years": [2027],
+      "note": "已接入智联校园公开公司页的服务端初始岗位数据；只保留2026-07-01后首次发布的校园岗位，并按AI/数据相关关键词筛选，避免把2025年首次发布的2026届岗位误报为2027秋招。"
+    },
+    {
       "id": "china_southern_airlines",
       "name": "中国南方航空",
       "type": "json_api",

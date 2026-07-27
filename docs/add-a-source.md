@@ -120,6 +120,36 @@ Token 或用于绕过访问控制的字段。
 
 对于复杂官网，应新增专用 Collector，并用脱敏响应 fixture 测试字段变化。
 
+## 智联校园公开公司页
+
+部分智联校园公司页会在服务端 HTML 的 `window.__INITIAL_DATA__` 中公开完整
+岗位列表，无需登录、Cookie、验证码或请求签名。可以使用
+`zhaopin_campus_company`，同时配置目标公司编号、届别起始日期和岗位
+关键词：
+
+```json
+{
+  "id": "example_zhaopin_company",
+  "name": "示例公司",
+  "type": "zhaopin_campus_company",
+  "enabled": true,
+  "homepage": "https://xiaoyuan.zhaopin.com/company/COMPANY_NUMBER",
+  "company_number": "COMPANY_NUMBER",
+  "company": "示例公司",
+  "company_type": "央企",
+  "min_first_published_at": "2026-07-01",
+  "work_types": ["校园"],
+  "include_keywords": ["AI", "人工智能", "数据", "算法", "开发"],
+  "exclude_keywords": ["销售", "客服"],
+  "graduation_years": [2027]
+}
+```
+
+届别判断必须优先使用 `firstPublishTime`。不要使用岗位最近更新时间，否则
+上一招聘周期重新发布的岗位可能被误判为新一届秋招。公司编号不符、页面
+结构变化或公开 HTML 只包含部分岗位时，采集器会报告来源错误，不会静默
+产生“没有新岗位”的假象。
+
 ## 公开匿名会话 API
 
 有些官网会先为所有访客签发短期匿名令牌，再调用公开岗位接口。只有在
