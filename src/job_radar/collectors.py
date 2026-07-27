@@ -804,6 +804,172 @@ class HotjobCampusCollector(Collector):
         return jobs
 
 
+class GiihgCampusCollector(Collector):
+    """Collect campus jobs from Guangzhou Industrial Investment Group."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode_page(raw: bytes) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("广州工控招聘接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("code") != 200:
+            raise ValueError("广州工控招聘接口返回失败状态")
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError("广州工控招聘接口缺少岗位数组")
+        try:
+            total = int(payload["total"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("广州工控招聘接口岗位总数字段异常") from exc
+        if total < 0:
+            raise ValueError("广州工控招聘接口岗位总数不能为负数")
+        return {"rows": rows, "total": total}
+
+    def _fetch_page(self, page: int) -> Dict[str, Any]:
+        params = urlencode(
+            {
+                "type": self.source.get("recruit_type", 1),
+                "pageNum": page,
+                "pageSize": self.source.get("page_size", 100),
+            }
+        )
+        separator = "&" if "?" in self.source["url"] else "?"
+        return self._decode_page(
+            fetch_bytes(
+                self.source["url"] + separator + params,
+                headers={"Referer": self.source["homepage"]},
+            )
+        )
+
+    def collect(self) -> List[JobPosting]:
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = self.source.get("min_published_at", "")
+        recruit_type = str(self.source.get("recruit_type", 1))
+        page_size = max(1, int(self.source.get("page_size", 100)))
+        max_pages = max(1, int(self.source.get("max_pages", 10)))
+
+        jobs = []
+        seen_ids = set()
+        expected_total = None
+        for page in range(1, max_pages + 1):
+            page_result = self._fetch_page(page)
+            rows = page_result["rows"]
+            if expected_total is None:
+                expected_total = page_result["total"]
+            if not rows:
+                break
+
+            for item in rows:
+                if not isinstance(item, dict):
+                    raise ValueError("广州工控招聘岗位元素结构异常")
+                external_id = str(item.get("id") or "")
+                title = _html_fragment_text(item.get("jobName", ""))
+                if not external_id or not title:
+                    raise ValueError("广州工控招聘岗位缺少 ID 或岗位名称")
+                if str(item.get("type")) != recruit_type:
+                    raise ValueError("广州工控招聘接口返回了非校园招聘岗位")
+                if str(item.get("isDisplay", "1")) != "1" or str(
+                    item.get("isDel", "0")
+                ) != "0":
+                    continue
+                if external_id in seen_ids:
+                    continue
+                seen_ids.add(external_id)
+
+                published_at = str(
+                    item.get("publishTime")
+                    or item.get("createTime")
+                    or ""
+                )
+                if min_published_at and (
+                    not published_at
+                    or published_at[:10] < min_published_at[:10]
+                ):
+                    continue
+                company = _html_fragment_text(
+                    item.get("companyName")
+                    or self.source.get("company", self.source["name"])
+                )
+                location = _html_fragment_text(
+                    item.get("address")
+                    or self.source.get("location", "待核对")
+                )
+                duties = _html_fragment_text(item.get("jobContent", ""))
+                requirements = _html_fragment_text(item.get("jobDesc", ""))
+                other_info = _html_fragment_text(item.get("otherInfo", ""))
+                searchable = " ".join(
+                    [
+                        title,
+                        company,
+                        duties,
+                        requirements,
+                        other_info,
+                    ]
+                )
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_keywords and not self._contains(
+                    searchable, include_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                description_parts = []
+                if duties:
+                    description_parts.append("岗位职责：" + duties)
+                if requirements:
+                    description_parts.append("任职要求：" + requirements)
+                if other_info:
+                    description_parts.append(other_info)
+                values = {
+                    "external_id": external_id,
+                    "title": title,
+                    "company": company,
+                    "company_type": self.source.get(
+                        "company_type", "未知"
+                    ),
+                    "location": location,
+                    "description": "｜".join(description_parts),
+                    "education": self.source.get(
+                        "education",
+                        "校园招聘，具体学历要求见任职要求",
+                    ),
+                    "graduation_years": self.source.get(
+                        "graduation_years", []
+                    ),
+                    "published_at": published_at,
+                    "deadline": str(item.get("deadline") or ""),
+                    "url": self.source["homepage"],
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            if len(seen_ids) >= expected_total:
+                break
+            if len(rows) < page_size:
+                break
+        else:
+            raise ValueError("广州工控招聘接口分页超过配置上限")
+
+        if expected_total is not None and len(seen_ids) < expected_total:
+            raise ValueError("广州工控招聘接口返回岗位数少于声明总数")
+        return jobs
+
+
 class WebNoticeCollector(Collector):
     """Turn a verified public campaign page into a one-time recruitment notice."""
 
@@ -1186,6 +1352,7 @@ COLLECTOR_TYPES = {
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
     "gdut_campus_notice": GdutCampusNoticeCollector,
+    "giihg_campus": GiihgCampusCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
     "hotjob_campus": HotjobCampusCollector,
     "json_api": JsonApiCollector,

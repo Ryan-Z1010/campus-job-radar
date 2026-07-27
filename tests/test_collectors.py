@@ -10,6 +10,7 @@ from job_radar.collectors import (
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
     GdutCampusNoticeCollector,
+    GiihgCampusCollector,
     GzRecruitCompanyCollector,
     HotjobCampusCollector,
     JsonApiCollector,
@@ -20,6 +21,151 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _giihg_source():
+        return {
+            "id": "guangzhou_industrial_investment_group",
+            "name": "广州工控集团",
+            "type": "giihg_campus",
+            "homepage": "https://www.giihg.com/xyzp",
+            "url": "https://www.giihg.com/prod-api/api/recruit/list",
+            "recruit_type": 1,
+            "page_size": 2,
+            "max_pages": 3,
+            "company": "广州工业投资控股集团有限公司",
+            "company_type": "国企",
+            "location": "广州",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "min_published_at": "2026-07-01",
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "数据",
+                "软件",
+                "信息技术",
+                "数字化",
+            ],
+            "exclude_keywords": ["销售", "客服", "市场营销", "2026届"],
+            "graduation_years": [2027],
+        }
+
+    @staticmethod
+    def _giihg_page(items, total=None):
+        return json.dumps(
+            {
+                "total": len(items) if total is None else total,
+                "rows": items,
+                "code": 200,
+                "msg": "查询成功",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_giihg_campus_paginates_filters_and_maps_jobs(self, fetch):
+        fetch.side_effect = [
+            self._giihg_page(
+                [
+                    {
+                        "id": "old-data",
+                        "jobName": "数据分析岗",
+                        "jobContent": "<p>负责经营数据分析。</p>",
+                        "jobDesc": "<p>计算机专业本科及以上。</p>",
+                        "publishTime": "2026-03-01 09:00:00",
+                        "type": "1",
+                        "isDisplay": "1",
+                        "isDel": "0",
+                        "address": "广州市荔湾区",
+                        "companyName": "广州工控集团",
+                    },
+                    {
+                        "id": "target-data",
+                        "jobName": "工业数据平台工程师",
+                        "jobContent": (
+                            "<p>负责工业互联网数据平台建设、"
+                            "数据治理与智能分析。</p>"
+                        ),
+                        "jobDesc": (
+                            "<p>计算机科学与技术、软件工程、"
+                            "人工智能相关专业硕士优先。</p>"
+                        ),
+                        "publishTime": "2026-08-20 09:30:00",
+                        "type": "1",
+                        "isDisplay": "1",
+                        "isDel": "0",
+                        "address": "广州市荔湾区",
+                        "companyName": "广州工控科技创新总院",
+                    },
+                ],
+                total=4,
+            ),
+            self._giihg_page(
+                [
+                    {
+                        "id": "sales-data",
+                        "jobName": "数据产品销售岗",
+                        "jobContent": "<p>负责软件产品销售。</p>",
+                        "jobDesc": "<p>市场营销专业优先。</p>",
+                        "publishTime": "2026-08-21 09:30:00",
+                        "type": "1",
+                        "isDisplay": "1",
+                        "isDel": "0",
+                        "address": "广州市",
+                        "companyName": "广州工控集团",
+                    },
+                    {
+                        "id": "other-city",
+                        "jobName": "软件开发工程师",
+                        "jobContent": "<p>负责信息系统开发。</p>",
+                        "jobDesc": "<p>计算机相关专业。</p>",
+                        "publishTime": "2026-08-22 09:30:00",
+                        "type": "1",
+                        "isDisplay": "1",
+                        "isDel": "0",
+                        "address": "湖南株洲",
+                        "companyName": "南方宇航",
+                    },
+                ],
+                total=4,
+            ),
+        ]
+
+        jobs = GiihgCampusCollector(self._giihg_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "target-data")
+        self.assertEqual(jobs[0].title, "工业数据平台工程师")
+        self.assertEqual(jobs[0].company, "广州工控科技创新总院")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州市荔湾区")
+        self.assertIn("负责工业互联网数据平台建设", jobs[0].description)
+        self.assertIn("计算机科学与技术", jobs[0].description)
+        self.assertEqual(jobs[0].published_at, "2026-08-20 09:30:00")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].url, self._giihg_source()["homepage"])
+        self.assertEqual(fetch.call_count, 2)
+        self.assertIn("type=1", fetch.call_args_list[0].args[0])
+        self.assertIn("pageNum=2", fetch.call_args_list[1].args[0])
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs["headers"]["Referer"],
+            self._giihg_source()["homepage"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_giihg_campus_empty_result_is_successful(self, fetch):
+        fetch.return_value = self._giihg_page([], total=0)
+
+        self.assertEqual(GiihgCampusCollector(self._giihg_source()).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_giihg_campus_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {"total": 1, "code": 200, "msg": "查询成功"}
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
+            GiihgCampusCollector(self._giihg_source()).collect()
+
     @staticmethod
     def _hotjob_source():
         return {
