@@ -83,13 +83,26 @@
     {
       "id": "gac_group",
       "name": "广汽集团",
-      "type": "html_links",
-      "enabled": false,
+      "type": "campaign_watch",
+      "enabled": true,
       "homepage": "https://www.gacgroup.com/cn/talent",
+      "required_text": "招聘信息",
+      "target_keywords": [
+        "2027校园招聘",
+        "2027 校园招聘",
+        "2027届校园招聘",
+        "2027届校招"
+      ],
+      "link_keywords": ["2027"],
+      "external_id": "gac-campus-2027-launch",
+      "title": "广汽集团2027校园招聘已启动（请核对AI/数据岗位）",
       "company": "广汽集团",
       "company_type": "国企",
-      "include_keywords": ["招聘", "校招", "数据", "人工智能"],
-      "note": "官方人才页可访问；已确认2026校招专题，等待2027正式专题入口后接入。"
+      "location": "广州",
+      "description": "广汽集团2027校园招聘启动提醒；请进入官网核对人工智能、数据、算法、软件及计算机相关岗位。",
+      "education": "应届毕业生，具体学历要求以岗位公告为准",
+      "graduation_years": [2027],
+      "note": "监控集团官网是否正式出现2027校招标识；当前未发布时正常返回空结果，不使用猜测专题地址。"
     },
     {
       "id": "xpeng",
