@@ -7,6 +7,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
+    GzRecruitCompanyCollector,
     JsonApiCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
@@ -15,6 +16,134 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _gzrecruit_source():
+        return {
+            "id": "guangzhou_digital",
+            "name": "广州数字科技集团",
+            "type": "gzrecruit_company",
+            "homepage": (
+                "https://www.gzrecruit.com/groupCompany.html"
+                "?unitNo=target-company"
+            ),
+            "url": "https://www.gzrecruit.com/api2/job/page",
+            "unit_no": "target-company",
+            "company": "广州数字科技集团有限公司",
+            "company_type": "国企",
+            "location": "广州",
+            "min_published_at": "2026-07-01",
+            "recruit_property": 2,
+            "include_keywords": ["AI", "人工智能", "数据", "算法"],
+            "exclude_keywords": ["销售"],
+            "graduation_years": [2027],
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gzrecruit_company_filters_and_maps_target_jobs(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "success": True,
+                "totalCount": 4,
+                "pageIndex": 1,
+                "totalPages": 1,
+                "data": [
+                    {
+                        "recruitNo": "job-ai-2027",
+                        "station": "数据与人工智能工程师",
+                        "company": {
+                            "name": "广州数字科技集团有限公司",
+                            "unitNo": "target-company",
+                        },
+                        "degree": "硕士",
+                        "salary": "15K~20K",
+                        "workLoc1st": "广州市",
+                        "workLoc2nd": "天河区",
+                        "tags": ["Python", "人工智能"],
+                        "regDate": 1785168000000,
+                        "recruitProperty": 2,
+                    },
+                    {
+                        "recruitNo": "job-old",
+                        "station": "数据工程师",
+                        "company": {
+                            "name": "广州数字科技集团有限公司",
+                            "unitNo": "target-company",
+                        },
+                        "regDate": 1751328000000,
+                        "recruitProperty": 2,
+                    },
+                    {
+                        "recruitNo": "job-social",
+                        "station": "人工智能工程师",
+                        "company": {
+                            "name": "广州数字科技集团有限公司",
+                            "unitNo": "target-company",
+                        },
+                        "regDate": 1785168000000,
+                        "recruitProperty": 1,
+                    },
+                    {
+                        "recruitNo": "job-sales",
+                        "station": "数据产品销售",
+                        "company": {
+                            "name": "广州数字科技集团有限公司",
+                            "unitNo": "target-company",
+                        },
+                        "regDate": 1785168000000,
+                        "recruitProperty": 2,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        jobs = GzRecruitCompanyCollector(self._gzrecruit_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "job-ai-2027")
+        self.assertEqual(jobs[0].title, "数据与人工智能工程师")
+        self.assertEqual(jobs[0].company, "广州数字科技集团有限公司")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州市/天河区")
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-07-28 00:00:00")
+        self.assertEqual(
+            jobs[0].url,
+            "https://www.gzrecruit.com/jobs/recruit/detail/job-ai-2027",
+        )
+        self.assertIn("15K~20K", jobs[0].description)
+        self.assertEqual(
+            fetch.call_args.kwargs["headers"]["X-Requested-With"],
+            "XMLHttpRequest",
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gzrecruit_company_empty_result_is_successful(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "success": True,
+                "totalCount": 0,
+                "pageIndex": 1,
+                "totalPages": 0,
+                "data": [],
+                "empty": True,
+            }
+        ).encode("utf-8")
+
+        jobs = GzRecruitCompanyCollector(self._gzrecruit_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gzrecruit_company_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {"success": True, "totalCount": 0, "data": {}}
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少 data 数组"):
+            GzRecruitCompanyCollector(self._gzrecruit_source()).collect()
+
     @staticmethod
     def _beisen_portal_homepage() -> bytes:
         payload = {
