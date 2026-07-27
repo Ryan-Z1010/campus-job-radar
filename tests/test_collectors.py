@@ -9,6 +9,7 @@ from job_radar.collectors import (
     JsonApiCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
+    ZhaopinCampusCompanyCollector,
 )
 
 
@@ -335,6 +336,92 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].graduation_years, [2027])
         self.assertEqual(jobs[0].url, "https://example.com/campus/2027")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_zhaopin_company_filters_cycle_and_maps_target_jobs(self, fetch):
+        fetch.return_value = (
+            Path(__file__).parent / "fixtures" / "zhaopin_unicom_company.html"
+        ).read_bytes()
+        source = {
+            "id": "china_unicom_guangdong",
+            "name": "中国联通广东省分公司",
+            "type": "zhaopin_campus_company",
+            "homepage": (
+                "https://xiaoyuan.zhaopin.com/company/"
+                "KA0145093017D90000138000"
+            ),
+            "company_number": "KA0145093017D90000138000",
+            "company": "中国联通广东省分公司",
+            "company_type": "央企",
+            "min_first_published_at": "2026-07-01",
+            "work_types": ["校园"],
+            "include_keywords": ["AI", "人工智能", "数据", "算法"],
+            "exclude_keywords": ["销售", "客服"],
+            "graduation_years": [2027],
+        }
+
+        jobs = ZhaopinCampusCompanyCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "CC-2027-DATA-001")
+        self.assertEqual(jobs[0].title, "AI数据开发工程师")
+        self.assertEqual(jobs[0].company, "中国联通广东省分公司")
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "广东省/广州市/海珠区")
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-08-20 09:00:00")
+        self.assertEqual(jobs[0].deadline, "2026-10-31 23:59:59")
+        self.assertIn("ETL", jobs[0].description)
+        self.assertEqual(jobs[0].url, source["homepage"])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_zhaopin_company_empty_job_list_is_successful(self, fetch):
+        fetch.return_value = (
+            "<script>window.__INITIAL_DATA__ = "
+            '{"company":{"recruitingPositionsState":{"count":0,"list":[]}}};'
+            "</script>"
+        ).encode("utf-8")
+        source = {
+            "id": "unicom",
+            "name": "中国联通广东省分公司",
+            "type": "zhaopin_campus_company",
+            "homepage": "https://example.com/company",
+        }
+
+        self.assertEqual(ZhaopinCampusCompanyCollector(source).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_zhaopin_company_rejects_changed_page_schema(self, fetch):
+        fetch.return_value = "<main>校园招聘</main>".encode("utf-8")
+        source = {
+            "id": "unicom",
+            "name": "中国联通广东省分公司",
+            "type": "zhaopin_campus_company",
+            "homepage": "https://example.com/company",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "智联校园公司页缺少公开初始数据"
+        ):
+            ZhaopinCampusCompanyCollector(source).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_zhaopin_company_rejects_partial_first_page(self, fetch):
+        fetch.return_value = (
+            "<script>window.__INITIAL_DATA__ = "
+            '{"company":{"recruitingPositionsState":{"count":21,"list":[]}}};'
+            "</script>"
+        ).encode("utf-8")
+        source = {
+            "id": "unicom",
+            "name": "中国联通广东省分公司",
+            "type": "zhaopin_campus_company",
+            "homepage": "https://example.com/company",
+        }
+
+        with self.assertRaisesRegex(ValueError, "只返回了部分岗位"):
+            ZhaopinCampusCompanyCollector(source).collect()
 
 
 if __name__ == "__main__":

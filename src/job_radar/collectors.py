@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -325,6 +326,147 @@ class ChinaSouthernPowerGridCollector(Collector):
         return [self._to_job(item) for item in items]
 
 
+class ZhaopinCampusCompanyCollector(Collector):
+    """Collect campus jobs exposed in a public Zhaopin company page."""
+
+    INITIAL_DATA_MARKER = "window.__INITIAL_DATA__"
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _deadline(value: Any) -> str:
+        try:
+            milliseconds = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if milliseconds <= 0:
+            return ""
+        china_time = timezone(timedelta(hours=8))
+        return datetime.fromtimestamp(
+            milliseconds / 1000, tz=china_time
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    @classmethod
+    def _initial_data(cls, body: str) -> Dict[str, Any]:
+        marker_at = body.find(cls.INITIAL_DATA_MARKER)
+        if marker_at < 0:
+            raise ValueError("智联校园公司页缺少公开初始数据，可能已经改版")
+        script_end = body.find("</script>", marker_at)
+        if script_end < 0:
+            raise ValueError("智联校园公司页初始数据标签不完整")
+        assignment = body[marker_at:script_end]
+        if "=" not in assignment:
+            raise ValueError("智联校园公司页初始数据格式异常")
+        raw = assignment.split("=", 1)[1].strip().rstrip(";")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("智联校园公司页返回了无效初始数据") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("智联校园公司页初始数据结构异常")
+        return payload
+
+    @staticmethod
+    def _location(item: Dict[str, Any]) -> str:
+        try:
+            address = _walk_json(
+                item, "jobDetailData.position.workLocation.workAddress"
+            )
+        except (KeyError, IndexError, TypeError, ValueError):
+            address = ""
+        if address:
+            return str(address).replace("、", "/")
+        return "/".join(
+            str(value)
+            for value in (item.get("workCity"), item.get("cityDistrict"))
+            if value
+        )
+
+    def _is_target_cycle(self, item: Dict[str, Any]) -> bool:
+        cutoff = str(self.source.get("min_first_published_at", "")).strip()
+        if not cutoff:
+            return True
+        first_published = str(item.get("firstPublishTime", "")).strip()
+        return bool(first_published) and first_published[:10] >= cutoff[:10]
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        deadline = ""
+        campus_detail = item.get("campusJobDetail")
+        if isinstance(campus_detail, dict):
+            deadline = self._deadline(campus_detail.get("applyEndTime"))
+        values = {
+            "external_id": item.get("number") or item.get("jobId"),
+            "title": item.get("name", ""),
+            "company": self.source.get("company", item.get("companyName", "")),
+            "company_type": self.source.get("company_type", "未知"),
+            "location": self._location(item),
+            "description": item.get("jobSummary", ""),
+            "education": item.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": item.get("firstPublishTime", ""),
+            "deadline": deadline,
+            "url": self.source["homepage"],
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        body = fetch_bytes(self.source["homepage"]).decode(
+            "utf-8", errors="replace"
+        )
+        payload = self._initial_data(body)
+        try:
+            state = _walk_json(payload, "company.recruitingPositionsState")
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValueError("智联校园公司页缺少招聘岗位数据") from exc
+        if not isinstance(state, dict) or not isinstance(state.get("list"), list):
+            raise ValueError("智联校园公司页招聘岗位结构异常")
+        items = state["list"]
+        if any(not isinstance(item, dict) for item in items):
+            raise ValueError("智联校园公司页岗位列表元素结构异常")
+        try:
+            total = int(state.get("count", len(items)))
+        except (TypeError, ValueError):
+            total = len(items)
+        if total > len(items):
+            raise ValueError("智联校园公司页只返回了部分岗位，需要升级分页采集")
+
+        expected_company_number = self.source.get("company_number", "")
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        work_types = set(self.source.get("work_types", ["校园"]))
+        jobs = []
+        for item in items:
+            item_company_number = item.get("companyNumber", "")
+            if (
+                expected_company_number
+                and item_company_number != expected_company_number
+            ):
+                raise ValueError("智联校园公司页返回了非目标公司的岗位")
+            if work_types and item.get("workType") not in work_types:
+                continue
+            if not self._is_target_cycle(item):
+                continue
+            searchable = " ".join(
+                str(item.get(field, ""))
+                for field in ("name", "jobSummary", "subJobTypeLevelName")
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item))
+        return jobs
+
+
 class _MissingValueDict(dict):
     def __missing__(self, key: str) -> str:
         return ""
@@ -487,6 +629,7 @@ COLLECTOR_TYPES = {
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
+    "zhaopin_campus_company": ZhaopinCampusCompanyCollector,
 }
 
 
