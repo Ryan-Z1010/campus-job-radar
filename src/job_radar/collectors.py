@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import re
+import zlib
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -863,6 +867,118 @@ class BeisenPortalCampaignCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class GdutCampusNoticeCollector(Collector):
+    """Scan recent public GDUT recruitment notices for a target campaign."""
+
+    _OBFUSCATED_FRAGMENT = re.compile(
+        r'Base64\.decode\(unzip\("([^"]+)"\)\.substr\((\d+)\)\)'
+        r"\.substr\((\d+)\)"
+    )
+
+    @classmethod
+    def _decoded_fragments(cls, body: str) -> List[str]:
+        matches = cls._OBFUSCATED_FRAGMENT.findall(body)
+        if not matches:
+            raise ValueError("广工招聘公告页缺少公开内容片段，可能已经改版")
+
+        fragments = []
+        try:
+            for encoded, compressed_prefix, html_prefix in matches:
+                compressed = base64.b64decode(encoded, validate=True)
+                wrapped_base64 = zlib.decompress(compressed)
+                inner_base64 = wrapped_base64[int(compressed_prefix) :]
+                wrapped_html = base64.b64decode(inner_base64, validate=True)
+                fragments.append(
+                    wrapped_html[int(html_prefix) :].decode("utf-8")
+                )
+        except (
+            binascii.Error,
+            UnicodeDecodeError,
+            ValueError,
+            zlib.error,
+        ) as exc:
+            raise ValueError("广工招聘公告页公开内容无法解码，可能已经改版") from exc
+        return fragments
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        first_page_url = self.source.get("first_page_url", homepage)
+        page_url_template = self.source.get("page_url_template", "")
+        max_pages = max(1, int(self.source.get("max_pages", 1)))
+        company_keywords = self.source.get(
+            "company_keywords",
+            [self.source.get("company", self.source["name"])],
+        )
+        target_keywords = self.source.get("target_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+
+        jobs = []
+        seen_urls = set()
+        for page in range(1, max_pages + 1):
+            if page == 1:
+                page_url = first_page_url
+            elif page_url_template:
+                page_url = page_url_template.format(page=page)
+            else:
+                break
+
+            body = fetch_bytes(page_url).decode("utf-8", errors="replace")
+            fragments = self._decoded_fragments(body)
+            decoded_html = "\n".join(fragments)
+            parser = _LinkParser()
+            parser.feed(decoded_html)
+            notice_links = [
+                link
+                for link in parser.links
+                if "/campus/view/id/" in link["href"]
+            ]
+            if not notice_links:
+                if "empty-container" in decoded_html:
+                    break
+                raise ValueError("广工招聘公告页没有找到公告链接，可能已经改版")
+
+            for link in notice_links:
+                title = " ".join(link["text"].split())
+                searchable = "{} {}".format(title, link["href"])
+                if not self._contains(searchable, company_keywords):
+                    continue
+                if target_keywords and not self._contains(
+                    searchable, target_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                detail_url = urljoin(homepage, link["href"])
+                if detail_url in seen_urls:
+                    continue
+                seen_urls.add(detail_url)
+                values = {
+                    "external_id": link["href"].rstrip("/").split("/")[-1],
+                    "title": title,
+                    "company": self.source.get("company", self.source["name"]),
+                    "company_type": self.source.get("company_type", "未知"),
+                    "location": self.source.get("location", "待核对"),
+                    "description": self.source.get("description", ""),
+                    "education": self.source.get("education", ""),
+                    "graduation_years": self.source.get(
+                        "graduation_years", []
+                    ),
+                    "url": detail_url,
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+        return jobs
+
+
 class HtmlLinksCollector(Collector):
     def collect(self) -> List[JobPosting]:
         homepage = self.source["homepage"]
@@ -898,6 +1014,7 @@ COLLECTOR_TYPES = {
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
+    "gdut_campus_notice": GdutCampusNoticeCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,
