@@ -258,6 +258,37 @@
       "note": "已接入广州市国企招聘平台“才聚羊城”的公开企业岗位接口；只保留2026-07-01后发布的校招AI/数据相关岗位。当前集团企业页岗位数为0时正常返回空结果。"
     },
     {
+      "id": "guangzhou_port_group",
+      "name": "广州港集团（广东工业大学招聘公告）",
+      "type": "gdut_campus_notice",
+      "enabled": true,
+      "homepage": "https://career.gdut.edu.cn/campus",
+      "first_page_url": "https://career.gdut.edu.cn/campus",
+      "page_url_template": "https://career.gdut.edu.cn/campus/index/do123/career.gdut.edu.cn/domain/gdut/city//page/{page}",
+      "max_pages": 3,
+      "company_keywords": ["广州港集团", "广州港"],
+      "target_keywords": [
+        "2027校园招聘",
+        "2027年校园招聘",
+        "2027届校园招聘",
+        "2027秋季校园招聘",
+        "2027年秋季校园招聘",
+        "2027届秋季校园招聘",
+        "2027校招",
+        "2027届校招",
+        "2027秋招",
+        "2027届秋招"
+      ],
+      "exclude_keywords": ["实习", "社会招聘", "社招", "拟录用", "录用结果"],
+      "company": "广州港集团",
+      "company_type": "国企",
+      "location": "广州",
+      "description": "广州港集团2027校园招聘启动提醒；请进入招聘简章优先核对信息技术、人工智能、数据科学与大数据、软件、网络安全及计算机相关岗位。",
+      "education": "应届毕业生，具体学历、专业和海外毕业时间要求以2027公告为准",
+      "graduation_years": [2027],
+      "note": "广州港集团官网未提供招聘栏目；2026届招聘简章由用人单位提交至广东工业大学就业网，并给出广州港集团公开网申入口。当前每天扫描该校最新3页公开招聘公告，只有标题同时命中广州港和2027正式校招时才提醒。"
+    },
+    {
       "id": "xpeng",
       "name": "小鹏集团",
       "type": "web_notice",

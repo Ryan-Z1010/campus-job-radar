@@ -1,5 +1,7 @@
+import base64
 import json
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +9,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
+    GdutCampusNoticeCollector,
     GzRecruitCompanyCollector,
     JsonApiCollector,
     NoticeJsonCollector,
@@ -16,6 +19,97 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _gdut_page(fragment):
+        wrapped_html = ("H" * 17 + fragment).encode("utf-8")
+        inner_base64 = base64.b64encode(wrapped_html)
+        wrapped_base64 = b"Z" * 23 + inner_base64
+        encoded = base64.b64encode(zlib.compress(wrapped_base64)).decode()
+        return (
+            '<section id="content123"></section><script>'
+            '$("#content123").each(function(){'
+            '$(this).replaceWith(Base64.decode(unzip("'
+            + encoded
+            + '").substr(23)).substr(17));});</script>'
+        ).encode("utf-8")
+
+    @staticmethod
+    def _gdut_source():
+        return {
+            "id": "guangzhou_port_group",
+            "name": "广州港集团",
+            "type": "gdut_campus_notice",
+            "homepage": "https://career.gdut.edu.cn/campus",
+            "first_page_url": "https://career.gdut.edu.cn/campus",
+            "page_url_template": (
+                "https://career.gdut.edu.cn/campus/index/public/page/{page}"
+            ),
+            "max_pages": 3,
+            "company_keywords": ["广州港"],
+            "target_keywords": ["2027届校园招聘", "2027校园招聘"],
+            "exclude_keywords": ["拟录用"],
+            "company": "广州港集团",
+            "company_type": "国企",
+            "location": "广州",
+            "graduation_years": [2027],
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdut_notice_scans_pages_and_emits_target_campaign(self, fetch):
+        fetch.side_effect = [
+            self._gdut_page(
+                '<ul class="infoList"><li>'
+                '<a href="/campus/view/id/1020700">'
+                "其他公司2027届校园招聘</a></li></ul>"
+            ),
+            self._gdut_page(
+                '<ul class="infoList"><li>'
+                '<a href="/campus/view/id/1020800">'
+                "广州港集团有限公司2027届校园招聘简章</a></li></ul>"
+            ),
+            self._gdut_page(
+                '<div class="empty-container"><p>暂无数据</p></div>'
+            ),
+        ]
+
+        jobs = GdutCampusNoticeCollector(self._gdut_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "1020800")
+        self.assertEqual(
+            jobs[0].title, "广州港集团有限公司2027届校园招聘简章"
+        )
+        self.assertEqual(jobs[0].company, "广州港集团")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://career.gdut.edu.cn/campus/view/id/1020800",
+        )
+        self.assertEqual(fetch.call_count, 3)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdut_notice_returns_empty_before_target_cycle(self, fetch):
+        fetch.return_value = self._gdut_page(
+            '<ul class="infoList"><li>'
+            '<a href="/campus/view/id/1020190">'
+            "广州港集团有限公司2026届校园招聘简章</a></li></ul>"
+        )
+        source = self._gdut_source()
+        source["max_pages"] = 1
+
+        self.assertEqual(GdutCampusNoticeCollector(source).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdut_notice_rejects_changed_page_schema(self, fetch):
+        fetch.return_value = (
+            "<main>广东工业大学招聘公告页面已改版</main>".encode("utf-8")
+        )
+
+        with self.assertRaisesRegex(ValueError, "缺少公开内容片段"):
+            GdutCampusNoticeCollector(self._gdut_source()).collect()
+
     @staticmethod
     def _gzrecruit_source():
         return {
