@@ -468,6 +468,162 @@ class ZhaopinCampusCompanyCollector(Collector):
         return jobs
 
 
+class GzRecruitCompanyCollector(Collector):
+    """Collect campus jobs from a public company page on 才聚羊城."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _china_datetime(value: Any) -> str:
+        try:
+            milliseconds = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if milliseconds <= 0:
+            return ""
+        china_time = timezone(timedelta(hours=8))
+        return datetime.fromtimestamp(
+            milliseconds / 1000, tz=china_time
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _is_target_cycle(self, item: Dict[str, Any]) -> bool:
+        cutoff = str(self.source.get("min_published_at", "")).strip()
+        if not cutoff:
+            return True
+        published_at = self._china_datetime(item.get("regDate"))
+        return bool(published_at) and published_at[:10] >= cutoff[:10]
+
+    def _fetch_page(self, page_index: int) -> Dict[str, Any]:
+        request_json = {
+            "unitNo": self.source["unit_no"],
+            "subUnitNo": self.source.get("sub_unit_no", ""),
+            "pageIndex": page_index,
+        }
+        payload = json.loads(
+            fetch_bytes(
+                self.source["url"],
+                method="POST",
+                json_body=request_json,
+                headers={
+                    "Origin": "https://www.gzrecruit.com",
+                    "Referer": self.source["homepage"],
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            ).decode("utf-8-sig")
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("才聚羊城岗位接口返回结构异常")
+        if payload.get("success") is not True:
+            raise ValueError(
+                "才聚羊城岗位接口失败（errCode={}）".format(
+                    payload.get("errCode", "未知")
+                )
+            )
+        if not isinstance(payload.get("data"), list):
+            raise ValueError("才聚羊城岗位接口缺少 data 数组")
+        if "totalCount" not in payload or "totalPages" not in payload:
+            raise ValueError("才聚羊城岗位接口缺少分页字段")
+        return payload
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        company = item.get("company")
+        company_name = company.get("name", "") if isinstance(company, dict) else ""
+        locations = []
+        for field in ("workLoc1st", "workLoc2nd", "workLoc3rd"):
+            value = str(item.get(field, "") or "").strip()
+            if value and value not in locations:
+                locations.append(value)
+        description_parts = []
+        salary = str(item.get("salary", "") or "").strip()
+        if salary:
+            description_parts.append("参考薪资：{}".format(salary))
+        tags = item.get("tags")
+        if isinstance(tags, list):
+            tag_text = "、".join(str(tag) for tag in tags if tag)
+            if tag_text:
+                description_parts.append("平台标签：{}".format(tag_text))
+        external_id = str(item.get("recruitNo", "") or "").strip()
+        values = {
+            "external_id": external_id,
+            "title": item.get("station", ""),
+            "company": self.source.get("company", company_name),
+            "company_type": self.source.get("company_type", "未知"),
+            "location": "/".join(locations)
+            or self.source.get("location", "待核对"),
+            "description": "；".join(description_parts),
+            "education": item.get("degree", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self._china_datetime(item.get("regDate")),
+            "url": self.source.get(
+                "detail_url_template",
+                "https://www.gzrecruit.com/jobs/recruit/detail/{recruitNo}",
+            ).format(recruitNo=external_id),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        expected_unit_no = self.source["unit_no"]
+        campus_property = int(self.source.get("recruit_property", 2))
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        items: List[Dict[str, Any]] = []
+        total_count = 0
+
+        for page_index in range(1, max_pages + 1):
+            payload = self._fetch_page(page_index)
+            page_items = payload["data"]
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("才聚羊城岗位列表元素结构异常")
+            items.extend(page_items)
+            try:
+                total_count = int(payload.get("totalCount", len(items)))
+                total_pages = int(payload.get("totalPages", 0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("才聚羊城岗位分页字段异常") from exc
+            if not page_items or len(items) >= total_count or page_index >= total_pages:
+                break
+        if len(items) < total_count:
+            raise ValueError("才聚羊城岗位没有完整返回全部分页")
+
+        jobs = []
+        for item in items:
+            company = item.get("company")
+            if not isinstance(company, dict):
+                raise ValueError("才聚羊城岗位缺少公司信息")
+            if company.get("unitNo") != expected_unit_no:
+                raise ValueError("才聚羊城岗位接口返回了非目标公司的岗位")
+            if item.get("recruitProperty") != campus_property:
+                continue
+            if not item.get("recruitNo") or not item.get("station"):
+                raise ValueError("才聚羊城岗位缺少稳定 ID 或岗位名称")
+            if not self._is_target_cycle(item):
+                continue
+            searchable = " ".join(
+                [
+                    str(item.get("station", "")),
+                    " ".join(str(tag) for tag in item.get("tags", []) if tag)
+                    if isinstance(item.get("tags"), list)
+                    else "",
+                ]
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item))
+        return jobs
+
+
 class _MissingValueDict(dict):
     def __missing__(self, key: str) -> str:
         return ""
@@ -742,6 +898,7 @@ COLLECTOR_TYPES = {
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
+    "gzrecruit_company": GzRecruitCompanyCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
