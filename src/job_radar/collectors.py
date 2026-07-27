@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from .models import JobPosting
@@ -25,6 +25,7 @@ def fetch_bytes(
     timeout: int = 20,
     method: str = "GET",
     json_body: Any = None,
+    form_body: Dict[str, Any] = None,
     headers: Dict[str, str] = None,
 ) -> bytes:
     request_headers = {
@@ -32,10 +33,15 @@ def fetch_bytes(
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     }
     request_headers.update(headers or {})
+    if json_body is not None and form_body is not None:
+        raise ValueError("请求不能同时使用 JSON 和表单正文")
     data = None
     if json_body is not None:
         data = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
         request_headers["Content-Type"] = "application/json"
+    elif form_body is not None:
+        data = urlencode(form_body).encode("utf-8")
+        request_headers["Content-Type"] = "application/x-www-form-urlencoded"
     request = Request(
         url,
         data=data,
@@ -633,6 +639,171 @@ class _MissingValueDict(dict):
         return ""
 
 
+class HotjobCampusCollector(Collector):
+    """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode_page(raw: bytes) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Hotjob 校招接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or str(payload.get("state")) != "200":
+            raise ValueError("Hotjob 校招接口返回失败状态")
+        data = payload.get("data")
+        page_form = data.get("pageForm") if isinstance(data, dict) else None
+        if not isinstance(page_form, dict):
+            raise ValueError("Hotjob 校招接口缺少 pageForm")
+        page_data = page_form.get("pageData")
+        if not isinstance(page_data, list):
+            raise ValueError("Hotjob 校招接口缺少岗位数组")
+        return page_form
+
+    def _fetch_page(self, page: int) -> Dict[str, Any]:
+        tenant_id = self.source["tenant_id"]
+        url = self.source.get(
+            "url",
+            (
+                "https://wecruit.hotjob.cn/wecruit/positionInfo/"
+                "listPosition/{}?iSaJAx=isAjax&request_locale=zh_CN"
+            ).format(tenant_id),
+        )
+        return self._decode_page(
+            fetch_bytes(
+                url,
+                method="POST",
+                form_body={
+                    "isFrompb": "true",
+                    "recruitType": self.source.get("recruit_type", 1),
+                    "pageSize": self.source.get("page_size", 15),
+                    "currentPage": page,
+                },
+                headers={
+                    "Referer": self.source["homepage"],
+                },
+            )
+        )
+
+    def collect(self) -> List[JobPosting]:
+        target_keywords = self.source.get("target_keywords", [])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = self.source.get("min_published_at", "")
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        homepage = self.source["homepage"]
+
+        jobs = []
+        seen_ids = set()
+        page = 1
+        while page <= max_pages:
+            page_form = self._fetch_page(page)
+            items = page_form["pageData"]
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("Hotjob 校招岗位元素结构异常")
+                post_id = str(item.get("postId") or "")
+                title = str(item.get("postName") or "")
+                if not post_id or not title:
+                    raise ValueError("Hotjob 校招岗位缺少 ID 或标题")
+                if post_id in seen_ids:
+                    continue
+                seen_ids.add(post_id)
+
+                published_at = str(item.get("publishFirstDate") or "")
+                project_name = str(item.get("projectName") or "")
+                company = str(
+                    item.get("company")
+                    or self.source.get("company", self.source["name"])
+                )
+                location = str(
+                    item.get("workPlaceStr")
+                    or self.source.get("location", "待核对")
+                )
+                searchable = " ".join(
+                    [
+                        project_name,
+                        title,
+                        str(item.get("postTypeName") or ""),
+                        company,
+                        str(item.get("department") or ""),
+                    ]
+                )
+                if target_keywords and not self._contains(
+                    searchable, target_keywords
+                ):
+                    continue
+                if min_published_at and (
+                    not published_at
+                    or published_at[:10] < min_published_at[:10]
+                ):
+                    continue
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_keywords and not self._contains(
+                    searchable, include_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                deadline = str(item.get("endDate") or "")
+                if deadline.startswith("3000-"):
+                    deadline = "长期招聘"
+                description_parts = [
+                    str(item.get("postTypeName") or ""),
+                    project_name,
+                    str(item.get("department") or ""),
+                ]
+                values = {
+                    "external_id": post_id,
+                    "title": title,
+                    "company": company,
+                    "company_type": self.source.get(
+                        "company_type", "未知"
+                    ),
+                    "location": location,
+                    "description": "｜".join(
+                        part for part in description_parts if part
+                    ),
+                    "education": str(item.get("educationStr") or ""),
+                    "graduation_years": self.source.get(
+                        "graduation_years", []
+                    ),
+                    "published_at": published_at,
+                    "deadline": deadline,
+                    "url": self.source.get(
+                        "url_template",
+                        homepage
+                        + "?postId={postId}&postType=campus",
+                    ).format_map(_MissingValueDict(item)),
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            try:
+                total_page = int(page_form.get("totalPage", 1))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Hotjob 校招接口分页字段异常") from exc
+            if page >= total_page:
+                break
+            page += 1
+        else:
+            raise ValueError("Hotjob 校招接口分页超过配置上限")
+
+        return jobs
+
+
 class WebNoticeCollector(Collector):
     """Turn a verified public campaign page into a one-time recruitment notice."""
 
@@ -1016,6 +1187,7 @@ COLLECTOR_TYPES = {
     "fixture_json": FixtureJsonCollector,
     "gdut_campus_notice": GdutCampusNoticeCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
+    "hotjob_campus": HotjobCampusCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
