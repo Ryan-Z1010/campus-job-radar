@@ -150,6 +150,47 @@ Token 或用于绕过访问控制的字段。
 结构变化或公开 HTML 只包含部分岗位时，采集器会报告来源错误，不会静默
 产生“没有新岗位”的假象。
 
+## 国聘公开企业岗位
+
+部分企业官网会直接链接到国聘的企业招聘专页。确认专页在未登录状态下使用
+公开岗位接口，且不依赖 Cookie、验证码、私有令牌或请求签名后，可以使用
+`iguopin_company`：
+
+```json
+{
+  "id": "example_iguopin_company",
+  "name": "示例集团",
+  "type": "iguopin_company",
+  "enabled": true,
+  "homepage": "https://example.iguopin.com/job",
+  "url": "https://gp-api.iguopin.com/api/jobs/v1/list",
+  "campaign_info_url": "https://gp-api.iguopin.com/api/activity/exclusive/v1/info",
+  "campaign_domain": "example",
+  "target_campaign_keywords": ["2027校园招聘", "2027届校园招聘"],
+  "company_id": "COMPANY_ID",
+  "company": "示例集团有限公司",
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "min_published_at": "2026-07-01",
+  "campus_natures": ["CAMPUS_NATURE_CODE"],
+  "company_name_keywords": ["示例集团"],
+  "page_size": 50,
+  "max_pages": 20,
+  "only_applicable": true,
+  "include_keywords": ["AI", "人工智能", "数据", "算法", "数字化"],
+  "exclude_keywords": ["实习", "社会招聘", "销售", "2026届"],
+  "graduation_years": [2027],
+  "detail_url_template": "https://example.iguopin.com/job/detail?id={job_id}"
+}
+```
+
+采集器先读取专页公开配置，只有招聘标题明确命中目标届别才继续；随后用
+`company_id_with_sub` 覆盖集团及下属公司，按接口声明的总数分页，并校验
+岗位 ID、招聘类型、公司名称和分页字段。`min_published_at` 必须按实际
+秋招周期设置，不能因为旧岗位仍可申请就把它归入新一届校招。目标届别尚未
+启动或岗位接口返回空数组时正常结束；分页不完整、响应结构变化或出现非
+目标集团岗位时会报告来源错误。
+
 ## Hotjob 公开校招岗位
 
 部分大易/Hotjob 招聘门户会由公开校招页面直接以表单 POST 请求分页岗位。

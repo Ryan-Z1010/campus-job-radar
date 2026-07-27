@@ -13,6 +13,7 @@ from job_radar.collectors import (
     GiihgCampusCollector,
     GzRecruitCompanyCollector,
     HotjobCampusCollector,
+    IguopinCompanyCollector,
     JsonApiCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
@@ -534,6 +535,161 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "缺少 data 数组"):
             GzRecruitCompanyCollector(self._gzrecruit_source()).collect()
+
+    @staticmethod
+    def _iguopin_source():
+        return {
+            "id": "guangzhou_development_group",
+            "name": "广州发展集团",
+            "type": "iguopin_company",
+            "homepage": "https://gdghr.iguopin.com/job",
+            "url": "https://gp-api.iguopin.com/api/jobs/v1/list",
+            "campaign_info_url": (
+                "https://gp-api.iguopin.com/api/activity/exclusive/v1/info"
+            ),
+            "campaign_domain": "gdghr",
+            "target_campaign_keywords": ["2027校园招聘", "2027届校园招聘"],
+            "company_id": "target-company",
+            "company": "广州发展集团股份有限公司",
+            "company_type": "国企",
+            "location": "广州",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "min_published_at": "2026-07-01",
+            "campus_natures": ["campus"],
+            "company_name_keywords": ["广州发展"],
+            "include_keywords": ["AI", "人工智能", "数据", "Python"],
+            "exclude_keywords": ["销售"],
+            "graduation_years": [2027],
+            "page_size": 2,
+            "max_pages": 3,
+        }
+
+    @staticmethod
+    def _iguopin_page(items, page=1, total=None):
+        return json.dumps(
+            {
+                "code": 200,
+                "msg": "OK",
+                "data": {
+                    "total": len(items) if total is None else total,
+                    "page": page,
+                    "page_size": 2,
+                    "list": items,
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _iguopin_campaign(title="广州发展集团2027校园招聘"):
+        return json.dumps(
+            {
+                "code": 200,
+                "msg": "OK",
+                "data": {
+                    "company_id": "target-company",
+                    "title": title,
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_iguopin_company_paginates_filters_and_maps_jobs(self, fetch):
+        target = {
+            "job_id": "job-ai-2027",
+            "job_name": "能源数据与人工智能工程师",
+            "company_name": "广州发展新能源集团有限公司",
+            "recruitment_type_cn": "校园招聘",
+            "nature": "campus",
+            "category_cn": "数据工程师",
+            "major_cn": ["计算机类", "人工智能"],
+            "education_cn": "硕士",
+            "district_list": [{"area_cn": "广州-天河区"}],
+            "contents": "<p>负责能源数据平台和 Python 算法开发。</p>",
+            "create_time": "2026-08-20 09:00:00",
+            "start_time": "2026-08-20 09:00:00",
+            "end_time": "2026-10-31 23:59:59",
+            "is_apply": True,
+        }
+        old = dict(target, job_id="job-old", create_time="2026-05-20 09:00:00")
+        sales = dict(
+            target,
+            job_id="job-sales",
+            job_name="数据产品销售",
+            create_time="2026-08-21 09:00:00",
+        )
+        social = dict(
+            target,
+            job_id="job-social",
+            recruitment_type_cn="社会招聘",
+            nature="social",
+            create_time="2026-08-22 09:00:00",
+        )
+        fetch.side_effect = [
+            self._iguopin_campaign(),
+            self._iguopin_page([target, old], page=1, total=4),
+            self._iguopin_page([sales, social], page=2, total=4),
+        ]
+
+        jobs = IguopinCompanyCollector(self._iguopin_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "job-ai-2027")
+        self.assertEqual(jobs[0].title, "能源数据与人工智能工程师")
+        self.assertEqual(jobs[0].company, "广州发展新能源集团有限公司")
+        self.assertEqual(jobs[0].location, "广州-天河区")
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-08-20 09:00:00")
+        self.assertEqual(jobs[0].deadline, "2026-10-31 23:59:59")
+        self.assertEqual(
+            jobs[0].url,
+            "https://gdghr.iguopin.com/job/detail?id=job-ai-2027",
+        )
+        self.assertIn("Python 算法开发", jobs[0].description)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["json_body"]["company_id_with_sub"],
+            "target-company",
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["headers"]["Device"], "pc"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_iguopin_company_empty_result_is_successful(self, fetch):
+        fetch.side_effect = [
+            self._iguopin_campaign(),
+            self._iguopin_page([]),
+        ]
+
+        jobs = IguopinCompanyCollector(self._iguopin_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_iguopin_company_returns_empty_before_target_campaign(self, fetch):
+        fetch.return_value = self._iguopin_campaign(
+            "广州发展集团2026校园招聘"
+        )
+
+        jobs = IguopinCompanyCollector(self._iguopin_source()).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_iguopin_company_rejects_changed_schema(self, fetch):
+        fetch.side_effect = [
+            self._iguopin_campaign(),
+            json.dumps(
+                {"code": 200, "data": {"total": 0, "list": {}}}
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "缺少 list 数组"):
+            IguopinCompanyCollector(self._iguopin_source()).collect()
 
     @staticmethod
     def _beisen_portal_homepage() -> bytes:
