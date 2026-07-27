@@ -184,6 +184,38 @@ Token 或用于绕过访问控制的字段。
 届别应优先依据 `projectName`，再同时使用 `publishFirstDate` 设置周期下限；
 不能仅凭岗位仍在线或截止日期较晚，就把上一届岗位判断为新一届岗位。
 
+## 广州工控官网公开岗位
+
+广州工控集团官网的社会招聘、校园招聘和海外招聘页面共用公开岗位 API，
+其中 `type=1` 为校园招聘。`giihg_campus` 会按接口声明总数分页，并校验每条
+记录仍属于校园招聘：
+
+```json
+{
+  "id": "guangzhou_industrial_investment_group",
+  "name": "广州工控集团",
+  "type": "giihg_campus",
+  "enabled": true,
+  "homepage": "https://www.giihg.com/xyzp",
+  "url": "https://www.giihg.com/prod-api/api/recruit/list",
+  "recruit_type": 1,
+  "page_size": 100,
+  "max_pages": 10,
+  "company": "广州工业投资控股集团有限公司",
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "min_published_at": "2026-07-01",
+  "include_keywords": ["AI", "人工智能", "数据", "软件", "工业互联网", "数字化"],
+  "exclude_keywords": ["实习", "社会招聘", "销售", "2026届"],
+  "graduation_years": [2027]
+}
+```
+
+当校园招聘总数为 0 时正常返回空结果；`rows` 或 `total` 消失、记录招聘类型
+不符、岗位缺少稳定 ID、实际分页数量少于声明总数时都会报告来源错误。岗位
+详情由官网校园招聘页弹窗展示，因此报告链接回官方校园招聘页，不构造不存在
+的岗位详情地址。
+
 ## 公开匿名会话 API
 
 有些官网会先为所有访客签发短期匿名令牌，再调用公开岗位接口。只有在
