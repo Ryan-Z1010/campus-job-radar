@@ -182,3 +182,31 @@ fixture、日志、报告或数据库。测试 fixture 中只能使用虚构令�
   "graduation_years": [2027]
 }
 ```
+
+## 北森门户公告追踪
+
+北森招聘门户的岗位页通常由 JavaScript 动态加载，但门户首页会在公开的
+`BSGlobal` 配置中列出每个页面当前的 `HtmlAddress`。不要把某一次发布产生
+的 OSS 文件地址永久写死；`beisen_portal_campaign` 会先读取门户配置，再
+跟随当前公告页检查目标届别：
+
+```json
+{
+  "id": "example_beisen_campaign",
+  "name": "示例公司",
+  "type": "beisen_portal_campaign",
+  "enabled": true,
+  "homepage": "https://example.zhiye.com/",
+  "tenant_name": "example",
+  "page_names": ["招聘公告", "校招公告"],
+  "target_keywords": ["2027校园招聘", "2027届校园招聘", "2027秋招"],
+  "exclude_keywords": ["拟录用", "录用结果"],
+  "external_id": "example-campus-2027-launch",
+  "title": "示例公司2027校园招聘已启动",
+  "campus_jobs_url": "https://example.zhiye.com/campus/jobs",
+  "graduation_years": [2027]
+}
+```
+
+适配器会校验租户名称和 `Pages` 结构。目标页面尚未出现 2027 标识时正常
+返回空结果；门户配置消失、租户不符或公告页面无法定位时则报告来源错误。

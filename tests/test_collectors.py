@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_radar.collectors import (
+    BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
     JsonApiCollector,
@@ -14,6 +15,108 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _beisen_portal_homepage() -> bytes:
+        payload = {
+            "Pages": [
+                {
+                    "Name": "招聘公告",
+                    "HtmlAddress": "https://cdn.example.com/notices.html",
+                },
+                {
+                    "Name": "校招公告",
+                    "HtmlAddress": "https://cdn.example.com/campus.html",
+                },
+                {
+                    "Name": "社会招聘首页",
+                    "HtmlAddress": "https://cdn.example.com/social.html",
+                },
+            ],
+            "tenantInfo": {"Name": "gzmetro"},
+        }
+        return (
+            "<script>var BSGlobal = "
+            + json.dumps(payload, ensure_ascii=False)
+            + ";</script>"
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_campaign_follows_current_pages_and_emits_link(self, fetch):
+        fetch.side_effect = [
+            self._beisen_portal_homepage(),
+            (
+                "<main><p>2026届春招面试通过人员名单</p>"
+                '<a href="/recruitFeed/detail?id=metro-2027">'
+                "广州地铁集团有限公司2027届校园招聘公告</a></main>"
+            ).encode("utf-8"),
+            "<main><img alt='校园招聘宣传图'></main>".encode("utf-8"),
+        ]
+        source = {
+            "id": "guangzhou_metro",
+            "name": "广州地铁集团",
+            "type": "beisen_portal_campaign",
+            "homepage": "https://gzmetro.example.com/",
+            "tenant_name": "gzmetro",
+            "page_names": ["招聘公告", "校招公告"],
+            "target_keywords": ["2027届校园招聘", "2027秋招"],
+            "external_id": "guangzhou-metro-campus-2027-launch",
+            "title": "广州地铁集团2027校园招聘已启动",
+            "company": "广州地铁集团",
+            "company_type": "国企",
+            "location": "广州",
+            "graduation_years": [2027],
+        }
+
+        jobs = BeisenPortalCampaignCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(
+            jobs[0].external_id, "guangzhou-metro-campus-2027-launch"
+        )
+        self.assertEqual(jobs[0].company, "广州地铁集团")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://gzmetro.example.com/recruitFeed/detail?id=metro-2027",
+        )
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_campaign_returns_empty_before_target_cycle(self, fetch):
+        fetch.side_effect = [
+            self._beisen_portal_homepage(),
+            "<main>广州地铁集团2026届春季招聘公示</main>".encode("utf-8"),
+            "<main>校园招聘敬请期待</main>".encode("utf-8"),
+        ]
+        source = {
+            "id": "guangzhou_metro",
+            "name": "广州地铁集团",
+            "type": "beisen_portal_campaign",
+            "homepage": "https://gzmetro.example.com/",
+            "tenant_name": "gzmetro",
+            "page_names": ["招聘公告", "校招公告"],
+            "target_keywords": ["2027届校园招聘"],
+            "title": "广州地铁集团2027校园招聘已启动",
+        }
+
+        self.assertEqual(BeisenPortalCampaignCollector(source).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_campaign_rejects_changed_portal_schema(self, fetch):
+        fetch.return_value = "<main>广州地铁招聘</main>".encode("utf-8")
+        source = {
+            "id": "guangzhou_metro",
+            "name": "广州地铁集团",
+            "type": "beisen_portal_campaign",
+            "homepage": "https://gzmetro.example.com/",
+            "title": "广州地铁集团2027校园招聘已启动",
+        }
+
+        with self.assertRaisesRegex(ValueError, "缺少公开站点配置"):
+            BeisenPortalCampaignCollector(source).collect()
+
     @patch("job_radar.collectors.fetch_bytes")
     def test_notice_json_filters_and_maps_campaign_announcements(self, fetch):
         fixture = (

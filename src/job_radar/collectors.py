@@ -591,6 +591,121 @@ class CampaignWatchCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class BeisenPortalCampaignCollector(Collector):
+    """Follow public Beisen portal page pointers and detect a target campaign."""
+
+    @staticmethod
+    def _portal_data(body: str) -> Dict[str, Any]:
+        marker = "var BSGlobal ="
+        marker_at = body.find(marker)
+        if marker_at < 0:
+            raise ValueError("北森招聘门户缺少公开站点配置，可能已经改版")
+        raw = body[marker_at + len(marker) :].lstrip()
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("北森招聘门户返回了无效站点配置") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("北森招聘门户站点配置结构异常")
+        return payload
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        portal_body = fetch_bytes(homepage).decode("utf-8", errors="replace")
+        portal_data = self._portal_data(portal_body)
+
+        expected_tenant = self.source.get("tenant_name", "")
+        tenant_info = portal_data.get("tenantInfo")
+        actual_tenant = (
+            tenant_info.get("Name", "") if isinstance(tenant_info, dict) else ""
+        )
+        if expected_tenant and actual_tenant != expected_tenant:
+            raise ValueError("北森招聘门户返回了非目标租户")
+
+        pages = portal_data.get("Pages")
+        if not isinstance(pages, list):
+            raise ValueError("北森招聘门户站点配置缺少 Pages 数组")
+        page_names = set(self.source.get("page_names", []))
+        page_urls = []
+        for page in pages:
+            if not isinstance(page, dict):
+                raise ValueError("北森招聘门户 Pages 列表元素结构异常")
+            if page_names and page.get("Name") not in page_names:
+                continue
+            address = page.get("HtmlAddress")
+            if address and address not in page_urls:
+                page_urls.append(address)
+        if not page_urls:
+            raise ValueError("北森招聘门户没有找到目标公告页面")
+
+        target_keywords = self.source.get("target_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        matched_keyword = ""
+        matched_url = ""
+        for page_url in page_urls:
+            page_body = fetch_bytes(page_url).decode("utf-8", errors="replace")
+            parser = _LinkParser()
+            parser.feed(page_body)
+            visible_text = " ".join(" ".join(parser.text_parts).split())
+            page_keyword = next(
+                (
+                    keyword
+                    for keyword in target_keywords
+                    if self._contains(visible_text, [keyword])
+                ),
+                "",
+            )
+            if not page_keyword:
+                continue
+            candidate_url = ""
+            for link in parser.links:
+                searchable = "{} {}".format(link["text"], link["href"])
+                if self._contains(searchable, [page_keyword]) and not (
+                    self._contains(searchable, exclude_keywords)
+                ):
+                    candidate_url = urljoin(homepage, link["href"])
+                    break
+            if not candidate_url and self._contains(
+                visible_text, exclude_keywords
+            ):
+                continue
+            matched_keyword = page_keyword
+            matched_url = candidate_url or self.source.get(
+                "campus_jobs_url", homepage
+            )
+            break
+
+        if not matched_keyword:
+            return []
+
+        values = {
+            "external_id": self.source.get(
+                "external_id",
+                "{}:{}".format(self.source["id"], matched_keyword),
+            ),
+            "title": self.source["title"],
+            "company": self.source.get("company", self.source["name"]),
+            "company_type": self.source.get("company_type", "未知"),
+            "location": self.source.get("location", "待核对"),
+            "description": self.source.get("description", ""),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self.source.get("published_at", ""),
+            "deadline": self.source.get("deadline", ""),
+            "url": matched_url,
+            "source_name": self.source["name"],
+        }
+        return [JobPosting.from_mapping(values)]
+
+
 class HtmlLinksCollector(Collector):
     def collect(self) -> List[JobPosting]:
         homepage = self.source["homepage"]
@@ -622,6 +737,7 @@ class HtmlLinksCollector(Collector):
 
 
 COLLECTOR_TYPES = {
+    "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,

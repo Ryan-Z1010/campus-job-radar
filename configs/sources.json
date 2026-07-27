@@ -169,6 +169,36 @@
       "note": "已接入官网公开 JSON API，并固定 jobType=3，只采集校园招聘。"
     },
     {
+      "id": "guangzhou_metro",
+      "name": "广州地铁集团",
+      "type": "beisen_portal_campaign",
+      "enabled": true,
+      "homepage": "https://gzmetro.zhiye.com/",
+      "tenant_name": "gzmetro",
+      "page_names": ["招聘公告", "校招公告"],
+      "target_keywords": [
+        "2027校园招聘",
+        "2027年校园招聘",
+        "2027届校园招聘",
+        "2027秋季校园招聘",
+        "2027年秋季校园招聘",
+        "2027届秋季校园招聘",
+        "2027秋招",
+        "2027届秋招"
+      ],
+      "exclude_keywords": ["拟录用", "面试通过人员名单", "录用结果"],
+      "external_id": "guangzhou-metro-campus-2027-launch",
+      "title": "广州地铁集团2027校园招聘已启动（请核对数据/信息化/AI岗位）",
+      "company": "广州地铁集团",
+      "company_type": "国企",
+      "location": "广州",
+      "description": "广州地铁集团2027校园招聘启动提醒；请进入官方校招岗位页优先核对数据、信息化、软件开发、人工智能、智慧交通及计算机相关岗位。",
+      "education": "应届毕业生，具体学历和海外毕业时间要求以公告为准",
+      "graduation_years": [2027],
+      "campus_jobs_url": "https://gzmetro.zhiye.com/campus/jobs",
+      "note": "已接入广州地铁官方北森招聘门户；先从公开 BSGlobal 配置解析当前招聘公告页面地址，再检测2027校招标识。当前仍为2026届公示时正常返回空结果。"
+    },
+    {
       "id": "gac_group",
       "name": "广汽集团",
       "type": "campaign_watch",
