@@ -1,0 +1,32 @@
+{
+  "cData": {
+    "contentSchema": {
+      "text1": "招聘单位",
+      "text3": "公告标题"
+    },
+    "list": [
+      {
+        "_orderId": "notice-2027-campus",
+        "text1": "广东公司",
+        "text3": "广东公司<br>2027届校园招聘正式启动",
+        "text4": "2026-08-20 09:00:00",
+        "text5": "2026-10-31 23:59:59",
+        "detail_href": "/personal/notice/detail.html?id=2027"
+      },
+      {
+        "_orderId": "notice-2027-internship",
+        "text1": "中移物联网",
+        "text3": "中移物联网2027届暑期实习生招聘",
+        "text4": "2026-06-01 09:00:00",
+        "detail_href": "/personal/notice/internship.html"
+      },
+      {
+        "_orderId": "notice-system-update",
+        "text1": "中国移动",
+        "text3": "招聘系统更新公告",
+        "text4": "2026-07-16 09:00:00",
+        "detail_href": "/personal/notice/system.html"
+      }
+    ]
+  }
+}

@@ -109,6 +109,87 @@ class JsonApiCollector(Collector):
         return jobs
 
 
+def _html_fragment_text(value: Any) -> str:
+    parser = _LinkParser()
+    parser.feed(str(value or ""))
+    return " ".join(" ".join(parser.text_parts).split())
+
+
+class NoticeJsonCollector(Collector):
+    """Collect matching campaign notices from a public JSON announcement feed."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _location(self, text: str) -> str:
+        for keyword, location in self.source.get("location_map", {}).items():
+            if str(keyword).lower() in text.lower():
+                return str(location)
+        return self.source.get("location", "待核对")
+
+    def _company(self, value: Any) -> str:
+        company = _html_fragment_text(value)
+        if not company:
+            return self.source.get("company", self.source["name"])
+        prefix = self.source.get("company_prefix", "")
+        if prefix and not company.startswith(prefix):
+            return "{}{}".format(prefix, company)
+        return company
+
+    def collect(self) -> List[JobPosting]:
+        try:
+            payload = json.loads(fetch_bytes(self.source["url"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("公告 JSON 来源返回了无效 JSON") from exc
+
+        try:
+            items = _walk_json(payload, self.source.get("list_path", ""))
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValueError("公告 JSON 来源的 list_path 不存在") from exc
+        if not isinstance(items, list):
+            raise ValueError("公告 JSON 来源的 list_path 没有指向数组")
+
+        target_keywords = self.source.get("target_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        homepage = self.source.get("homepage", self.source["url"])
+        jobs = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("公告 JSON 来源的列表元素结构异常")
+            title = _html_fragment_text(item.get("text3", ""))
+            if not title or (
+                target_keywords and not self._contains(title, target_keywords)
+            ):
+                continue
+            if self._contains(title, exclude_keywords):
+                continue
+
+            detail_href = item.get("detail_href") or item.get("jump_link") or homepage
+            company = self._company(item.get("text1"))
+            searchable = "{} {}".format(company, title)
+            values = {
+                "external_id": item.get("_orderId") or detail_href,
+                "title": title,
+                "company": company,
+                "company_type": self.source.get("company_type", "未知"),
+                "location": self._location(searchable),
+                "description": self.source.get("description", ""),
+                "education": self.source.get("education", ""),
+                "graduation_years": self.source.get("graduation_years", []),
+                "published_at": item.get("text4", ""),
+                "deadline": item.get("text5", ""),
+                "url": urljoin(homepage, str(detail_href)),
+                "source_name": self.source.get("name", self.source["id"]),
+            }
+            jobs.append(JobPosting.from_mapping(values))
+        return jobs
+
+
 class ChinaSouthernPowerGridCollector(Collector):
     """Collect public vacancies through CSG's anonymous website session."""
 
@@ -404,6 +485,7 @@ COLLECTOR_TYPES = {
     "fixture_json": FixtureJsonCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,
+    "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
 }
 
