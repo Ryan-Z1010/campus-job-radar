@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
-from urllib.parse import quote, urlencode, urljoin
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 from .models import JobPosting
@@ -629,6 +629,240 @@ class GzRecruitCompanyCollector(Collector):
             ):
                 continue
             if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item))
+        return jobs
+
+
+class IguopinCompanyCollector(Collector):
+    """Collect public campus jobs from an IGuopin company recruitment site."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _is_target_cycle(self, item: Dict[str, Any]) -> bool:
+        cutoff = str(self.source.get("min_published_at", "")).strip()
+        if not cutoff:
+            return True
+        published_at = str(
+            item.get("create_time") or item.get("start_time") or ""
+        ).strip()
+        return bool(published_at) and published_at[:10] >= cutoff[:10]
+
+    def _request_headers(self) -> Dict[str, str]:
+        homepage = urlsplit(self.source["homepage"])
+        return {
+            "Device": "pc",
+            "Version": "5",
+            "Origin": "{}://{}".format(homepage.scheme, homepage.netloc),
+            "Referer": self.source["homepage"],
+        }
+
+    def _target_campaign_started(self) -> bool:
+        target_keywords = self.source.get("target_campaign_keywords", [])
+        if not target_keywords:
+            return True
+        campaign_info_url = self.source.get("campaign_info_url")
+        campaign_domain = self.source.get("campaign_domain")
+        if not campaign_info_url or not campaign_domain:
+            raise ValueError("国聘目标届别监控缺少专页配置")
+        url = "{}?{}".format(
+            campaign_info_url,
+            urlencode({"domain": campaign_domain}),
+        )
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    url,
+                    headers=self._request_headers(),
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("国聘专页配置接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("code") != 200:
+            raise ValueError("国聘专页配置接口响应异常")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("国聘专页配置接口缺少 data 对象")
+        if str(data.get("company_id", "")) != str(self.source["company_id"]):
+            raise ValueError("国聘专页配置返回了非目标集团")
+        title = str(data.get("title", "") or "")
+        if not title:
+            raise ValueError("国聘专页配置缺少招聘标题")
+        return self._contains(title, target_keywords)
+
+    def _fetch_page(self, page: int) -> Dict[str, Any]:
+        request_json = {
+            "page": page,
+            "page_size": int(self.source.get("page_size", 50)),
+            "company_id_with_sub": self.source["company_id"],
+        }
+        campus_natures = self.source.get("campus_natures", [])
+        if campus_natures:
+            request_json["nature"] = campus_natures
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    method="POST",
+                    json_body=request_json,
+                    headers=self._request_headers(),
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("国聘岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("国聘岗位接口返回结构异常")
+        if payload.get("code") != 200:
+            raise ValueError(
+                "国聘岗位接口失败（code={}）".format(payload.get("code", "未知"))
+            )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("国聘岗位接口缺少 data 对象")
+        if not isinstance(data.get("list"), list):
+            raise ValueError("国聘岗位接口缺少 list 数组")
+        if any(field not in data for field in ("total", "page", "page_size")):
+            raise ValueError("国聘岗位接口缺少分页字段")
+        return data
+
+    def _location(self, item: Dict[str, Any]) -> str:
+        districts = item.get("district_list")
+        locations = []
+        if isinstance(districts, list):
+            for district in districts:
+                if not isinstance(district, dict):
+                    raise ValueError("国聘岗位地点结构异常")
+                location = str(district.get("area_cn", "") or "").strip()
+                if location and location not in locations:
+                    locations.append(location)
+        return "/".join(locations) or self.source.get("location", "待核对")
+
+    def _description(self, item: Dict[str, Any]) -> str:
+        parts = []
+        category = str(item.get("category_cn", "") or "").strip()
+        if category:
+            parts.append("岗位类别：{}".format(category))
+        majors = item.get("major_cn")
+        if isinstance(majors, list):
+            major_text = "、".join(str(major) for major in majors if major)
+            if major_text:
+                parts.append("专业要求：{}".format(major_text))
+        contents = _html_fragment_text(item.get("contents", ""))
+        if contents:
+            parts.append(contents)
+        return "；".join(parts)
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        external_id = str(item.get("job_id", "") or "").strip()
+        company_info = item.get("company_info")
+        company_info = company_info if isinstance(company_info, dict) else {}
+        company = (
+            item.get("company_name")
+            or company_info.get("show_name")
+            or company_info.get("name")
+            or self.source.get("company", "")
+        )
+        values = {
+            "external_id": external_id,
+            "title": item.get("job_name", ""),
+            "company": company,
+            "company_type": self.source.get("company_type", "未知"),
+            "location": self._location(item),
+            "description": self._description(item),
+            "education": item.get("education_cn", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": item.get("create_time")
+            or item.get("start_time", ""),
+            "deadline": item.get("end_time", ""),
+            "url": self.source.get(
+                "detail_url_template",
+                "https://gdghr.iguopin.com/job/detail?id={job_id}",
+            ).format(job_id=external_id),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        if not self._target_campaign_started():
+            return []
+
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        campus_natures = set(self.source.get("campus_natures", []))
+        company_name_keywords = self.source.get("company_name_keywords", [])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        items: List[Dict[str, Any]] = []
+        total = 0
+
+        for page in range(1, max_pages + 1):
+            data = self._fetch_page(page)
+            page_items = data["list"]
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("国聘岗位列表元素结构异常")
+            items.extend(page_items)
+            try:
+                total = int(data["total"])
+                current_page = int(data["page"])
+                page_size = int(data["page_size"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("国聘岗位分页字段异常") from exc
+            if current_page != page or page_size <= 0:
+                raise ValueError("国聘岗位分页响应与请求不一致")
+            if not page_items or len(items) >= total:
+                break
+        if len(items) < total:
+            raise ValueError("国聘岗位没有完整返回全部分页")
+
+        jobs = []
+        for item in items:
+            if not item.get("job_id") or not item.get("job_name"):
+                raise ValueError("国聘岗位缺少稳定 ID 或岗位名称")
+            company_name = str(item.get("company_name", "") or "")
+            if company_name_keywords and not self._contains(
+                company_name, company_name_keywords
+            ):
+                raise ValueError("国聘岗位接口返回了非目标集团的岗位")
+            if campus_natures and item.get("nature") not in campus_natures:
+                continue
+            if item.get("recruitment_type_cn") != "校园招聘":
+                continue
+            if self.source.get("only_applicable", True) and not item.get(
+                "is_apply", False
+            ):
+                continue
+            if not self._is_target_cycle(item):
+                continue
+
+            description = self._description(item)
+            searchable = " ".join(
+                [
+                    str(item.get("job_name", "")),
+                    str(item.get("category_cn", "")),
+                    " ".join(
+                        str(major) for major in item.get("major_cn", []) if major
+                    )
+                    if isinstance(item.get("major_cn"), list)
+                    else "",
+                    description,
+                ]
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            location = self._location(item)
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
                 continue
             jobs.append(self._to_job(item))
         return jobs
@@ -1355,6 +1589,7 @@ COLLECTOR_TYPES = {
     "giihg_campus": GiihgCampusCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
     "hotjob_campus": HotjobCampusCollector,
+    "iguopin_company": IguopinCompanyCollector,
     "json_api": JsonApiCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
