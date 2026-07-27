@@ -217,6 +217,7 @@ class CollectorTests(unittest.TestCase):
             "homepage": "https://example.com/",
             "title": "广汽集团2027校园招聘",
             "required_text": "广汽集团2027校园招聘",
+            "url": "https://example.com/campus/2027",
             "company": "广汽集团",
             "company_type": "国企",
             "location": "广州",
@@ -225,6 +226,7 @@ class CollectorTests(unittest.TestCase):
         jobs = WebNoticeCollector(source).collect()
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].url, "https://example.com/campus/2027")
 
 
 if __name__ == "__main__":
