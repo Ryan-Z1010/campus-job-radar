@@ -152,6 +152,28 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(jobs[0].graduation_years, [2027])
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_campaign_watch_ignores_previous_china_telecom_campaign(self, fetch):
+        fetch.return_value = (
+            "<main><p>中国电信集团有限公司携下属分子公司和专业机构，"
+            "正式启动2026年度春季校园招聘活动。</p></main>"
+        ).encode("utf-8")
+        source = {
+            "id": "china_telecom",
+            "name": "中国电信",
+            "type": "campaign_watch",
+            "homepage": "https://campus.example.com/chinatelecom/about.html",
+            "required_text": "中国电信集团有限公司",
+            "target_keywords": [
+                "2027年度校园招聘",
+                "2027届校园招聘",
+                "2027秋季校园招聘",
+            ],
+            "title": "中国电信2027校园招聘已启动",
+        }
+
+        self.assertEqual(CampaignWatchCollector(source).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_csg_anonymous_session_and_job_mapping(self, fetch):
         fixture = (
             Path(__file__).parent / "fixtures" / "csg_search_response.json"

@@ -73,6 +73,34 @@
       "note": "已接入官网首页公开读取的静态公告 JSON，只监控2027正式校园招聘并排除实习、社招和录用结果；职位明细接口仍不复制签名机制。"
     },
     {
+      "id": "china_telecom",
+      "name": "中国电信",
+      "type": "campaign_watch",
+      "enabled": true,
+      "homepage": "https://campus.51job.com/chinatelecom/about.html",
+      "required_text": "中国电信集团有限公司",
+      "target_keywords": [
+        "2027年度校园招聘",
+        "2027年校园招聘",
+        "2027届校园招聘",
+        "2027秋季校园招聘",
+        "2027年秋季校园招聘",
+        "2027届秋季校园招聘",
+        "2027秋招",
+        "2027届秋招"
+      ],
+      "link_keywords": ["2027", "招聘网站"],
+      "external_id": "china-telecom-campus-2027-launch",
+      "title": "中国电信2027校园招聘已启动（请优先核对广东公司AI/数据岗位）",
+      "company": "中国电信集团",
+      "company_type": "央企",
+      "location": "全国（请优先核对广东公司）",
+      "description": "中国电信2027校园招聘启动提醒；请进入官方招聘入口优先核对广东公司在广州及广东省内的人工智能、大数据、云计算、数据开发、算法、研发和企业信息化岗位。",
+      "education": "应届毕业生，具体学历和海外毕业时间要求以岗位公告为准",
+      "graduation_years": [2027],
+      "note": "集团官网和自建招聘站对脚本请求返回412；已改用中国电信官方公告明确列出的前程无忧合作专题做届别启动监控，不绕过访问控制。当前专题仍为2026春招时正常返回空结果。"
+    },
+    {
       "id": "china_southern_airlines",
       "name": "中国南方航空",
       "type": "json_api",
