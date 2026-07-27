@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .collectors import USER_AGENT
+from .network import urlopen_with_retry
 
 
 def audit_sources(sources: List[Dict[str, Any]], timeout: int = 15) -> List[Dict[str, Any]]:
@@ -26,7 +27,7 @@ def audit_sources(sources: List[Dict[str, Any]], timeout: int = 15) -> List[Dict
             },
         )
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with urlopen_with_retry(request, timeout=timeout, opener=urlopen) as response:
                 content_type = response.headers.get("Content-Type", "")
                 status = str(response.status)
                 final_url = response.geturl()

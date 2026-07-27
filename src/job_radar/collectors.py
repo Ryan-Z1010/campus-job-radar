@@ -10,6 +10,7 @@ from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 
 from .models import JobPosting
+from .network import urlopen_with_retry
 
 
 USER_AGENT = "CampusJobRadar/0.1 (+https://github.com/Ryan-Z1010/campus-job-radar)"
@@ -37,7 +38,7 @@ def fetch_bytes(
         headers=request_headers,
         method=method.upper(),
     )
-    with urlopen(request, timeout=timeout) as response:
+    with urlopen_with_retry(request, timeout=timeout, opener=urlopen) as response:
         return response.read()
 
 
