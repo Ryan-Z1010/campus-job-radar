@@ -634,6 +634,169 @@ class GzRecruitCompanyCollector(Collector):
         return jobs
 
 
+class GdrcGroupCollector(Collector):
+    """Collect campus jobs from 广东省人才市场's public SOE portal."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any) -> str:
+        digits = re.sub(r"\D", "", str(value or ""))
+        if len(digits) < 8:
+            return ""
+        return "{}-{}-{}".format(digits[:4], digits[4:6], digits[6:8])
+
+    def _fetch_page(self, page: int) -> Dict[str, Any]:
+        request_json = {
+            "city": "",
+            "degreelevel": "",
+            "isfulltime": "",
+            "keyword": "",
+            "posttype": "",
+            "salary": "",
+            "length": int(self.source.get("page_size", 50)),
+            "page": page,
+            "shzp": int(self.source.get("campus_flag", 0)),
+            "gid": str(self.source["group_id"]),
+            "gqzp": 1,
+        }
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    method="POST",
+                    json_body=request_json,
+                    headers={
+                        "Origin": "https://jq.gdrc.com",
+                        "Referer": self.source["homepage"],
+                    },
+                ).decode("utf-8-sig")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("广东国企招聘岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("code") != 0:
+            raise ValueError(
+                "广东国企招聘岗位接口失败（code={}）".format(
+                    payload.get("code", "未知")
+                    if isinstance(payload, dict)
+                    else "未知"
+                )
+            )
+        data = payload.get("data")
+        page_data = data.get("pageData") if isinstance(data, dict) else None
+        if not isinstance(page_data, dict):
+            raise ValueError("广东国企招聘岗位接口缺少分页数据")
+        if not isinstance(page_data.get("list"), list):
+            raise ValueError("广东国企招聘岗位接口缺少岗位数组")
+        if "total" not in page_data:
+            raise ValueError("广东国企招聘岗位接口缺少岗位总数")
+        return page_data
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        external_id = str(item.get("j_id", "") or "").strip()
+        description = _html_fragment_text(item.get("detailrequirement", ""))
+        headcount = str(item.get("headcount", "") or "").strip()
+        if headcount and headcount != "0":
+            description = "{}{}招聘人数：{}".format(
+                description,
+                "；" if description else "",
+                headcount,
+            )
+        degree_map = self.source.get("degree_map", {})
+        education = degree_map.get(
+            str(item.get("degreelevel", "") or ""),
+            "",
+        )
+        values = {
+            "external_id": external_id,
+            "title": item.get("position", ""),
+            "company": item.get("companyname")
+            or self.source.get("company", self.source["name"]),
+            "company_type": self.source.get("company_type", "未知"),
+            "location": item.get("address")
+            or self.source.get("location", "待核对"),
+            "description": description,
+            "education": education,
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self._date(item.get("recruitstartday")),
+            "deadline": self._date(item.get("recruitendday")),
+            "url": self.source.get(
+                "detail_url_template",
+                (
+                    "https://jq.gdrc.com/recruitCon/"
+                    "recruit-job-detail.html?id={j_id}"
+                ),
+            ).format(j_id=external_id),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        expected_group_id = str(self.source["group_id"])
+        campus_flag = str(self.source.get("campus_flag", 0))
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        cutoff = str(self.source.get("min_published_at", "")).strip()
+        items: List[Dict[str, Any]] = []
+        total = 0
+
+        for page in range(1, max_pages + 1):
+            page_data = self._fetch_page(page)
+            page_items = page_data["list"]
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("广东国企招聘岗位列表元素结构异常")
+            try:
+                total = int(page_data["total"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("广东国企招聘岗位总数字段异常") from exc
+            items.extend(page_items)
+            if not page_items or len(items) >= total:
+                break
+        if len(items) < total:
+            raise ValueError("广东国企招聘岗位没有完整返回全部分页")
+
+        jobs = []
+        for item in items:
+            if str(item.get("gid", "")) != expected_group_id:
+                raise ValueError("广东国企招聘岗位接口返回了非目标集团岗位")
+            if str(item.get("shzp", "")) != campus_flag:
+                continue
+            if not item.get("j_id") or not item.get("position"):
+                raise ValueError("广东国企招聘岗位缺少稳定 ID 或岗位名称")
+            published_at = self._date(item.get("recruitstartday"))
+            if cutoff and (not published_at or published_at < cutoff[:10]):
+                continue
+            searchable = " ".join(
+                str(item.get(field, "") or "")
+                for field in (
+                    "position",
+                    "companyname",
+                    "address",
+                    "detailrequirement",
+                )
+            )
+            if location_keywords and not self._contains(
+                searchable, location_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item))
+        return jobs
+
+
 class IguopinCompanyCollector(Collector):
     """Collect public campus jobs from an IGuopin company recruitment site."""
 
@@ -1586,6 +1749,7 @@ COLLECTOR_TYPES = {
     "csg_api": ChinaSouthernPowerGridCollector,
     "fixture_json": FixtureJsonCollector,
     "gdut_campus_notice": GdutCampusNoticeCollector,
+    "gdrc_group": GdrcGroupCollector,
     "giihg_campus": GiihgCampusCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
     "hotjob_campus": HotjobCampusCollector,

@@ -257,6 +257,37 @@ Token 或用于绕过访问控制的字段。
 详情由官网校园招聘页弹窗展示，因此报告链接回官方校园招聘页，不构造不存在
 的岗位详情地址。
 
+## 广东国企招聘公开岗位
+
+广东省人才市场的“广东国企招聘”页面为各省属集团设置稳定的 `gid`，并通过
+`/touristApi/listJob` 提供校园招聘与社会招聘岗位。`gdrc_group` 固定目标
+集团编号和校园招聘标记，按接口声明总数分页：
+
+```json
+{
+  "id": "example_gdrc_group",
+  "name": "示例省属集团",
+  "type": "gdrc_group",
+  "enabled": true,
+  "homepage": "https://jq.gdrc.com/gqzp/position.html?type=school",
+  "url": "https://jq.gdrc.com/touristApi/listJob",
+  "group_id": "1004",
+  "campus_flag": 0,
+  "page_size": 50,
+  "max_pages": 20,
+  "company": "示例省属集团有限公司",
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "min_published_at": "2026-07-01",
+  "include_keywords": ["AI", "人工智能", "数据", "软件", "智能交通"],
+  "exclude_keywords": ["实习", "社会招聘", "销售", "2026届"],
+  "graduation_years": [2027]
+}
+```
+
+接口正常返回 0 个岗位时视为空结果；集团编号不符、校园招聘标记异常、岗位
+缺少稳定 ID、分页字段变化或实际返回数量少于声明总数时会报告来源错误。
+
 ## 公开匿名会话 API
 
 有些官网会先为所有访客签发短期匿名令牌，再调用公开岗位接口。只有在
