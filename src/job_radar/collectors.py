@@ -1036,6 +1036,215 @@ class _MissingValueDict(dict):
         return ""
 
 
+class CvteCampusCollector(Collector):
+    """Collect full-time target-cycle jobs from CVTE's public campus APIs."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode(raw: bytes, label: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("CVTE{}接口返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("CVTE{}接口响应结构异常".format(label))
+        return payload
+
+    @staticmethod
+    def _china_datetime(value: Any) -> str:
+        try:
+            milliseconds = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if milliseconds <= 0:
+            return ""
+        china_time = timezone(timedelta(hours=8))
+        return datetime.fromtimestamp(
+            milliseconds / 1000, tz=china_time
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _education(text: str, fallback: str) -> str:
+        levels = [
+            level
+            for level in ("博士", "硕士", "本科", "大专")
+            if level in text
+        ]
+        return "/".join(levels) or fallback
+
+    def _target_projects(self) -> List[Dict[str, Any]]:
+        payload = self._decode(
+            fetch_bytes(self.source["projects_url"]),
+            "项目",
+        )
+        projects = payload.get("projects")
+        if not isinstance(projects, list):
+            raise ValueError("CVTE项目接口缺少 projects 数组")
+        if any(not isinstance(project, dict) for project in projects):
+            raise ValueError("CVTE项目列表元素结构异常")
+
+        target_keywords = self.source.get("target_project_keywords", [])
+        excluded_keywords = self.source.get("exclude_project_keywords", [])
+        targets = []
+        for project in projects:
+            project_id = str(project.get("id", "") or "").strip()
+            project_name = str(project.get("name", "") or "").strip()
+            if not project_id or not project_name:
+                raise ValueError("CVTE项目缺少稳定 ID 或名称")
+            if target_keywords and not self._contains(
+                project_name, target_keywords
+            ):
+                continue
+            if self._contains(project_name, excluded_keywords):
+                continue
+            targets.append(project)
+        return targets
+
+    def _positions(
+        self, projects: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        project_ids = [str(project["id"]) for project in projects]
+        query = urlencode(
+            [("projectIds", project_id) for project_id in project_ids]
+        )
+        separator = "&" if "?" in self.source["url"] else "?"
+        payload = self._decode(
+            fetch_bytes("{}{}{}".format(self.source["url"], separator, query)),
+            "岗位",
+        )
+        positions = payload.get("projectPositions")
+        if not isinstance(positions, list):
+            raise ValueError("CVTE岗位接口缺少 projectPositions 数组")
+        if any(not isinstance(position, dict) for position in positions):
+            raise ValueError("CVTE岗位列表元素结构异常")
+        return positions
+
+    @staticmethod
+    def _locations(item: Dict[str, Any]) -> str:
+        areas = item.get("areaViews")
+        if not isinstance(areas, list):
+            raise ValueError("CVTE岗位地点结构异常")
+        locations = []
+        for area in areas:
+            if not isinstance(area, dict):
+                raise ValueError("CVTE岗位地点元素结构异常")
+            city = str(area.get("cityName", "") or "").strip()
+            if city and city not in locations:
+                locations.append(city)
+        return "/".join(locations)
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        project: Dict[str, Any],
+        location: str,
+    ) -> JobPosting:
+        external_id = str(item["id"])
+        requirement = str(item.get("requirement", "") or "").strip()
+        duty = str(item.get("duty", "") or "").strip()
+        description_parts = [
+            "招聘性质：{}".format(item["propertyName"]),
+            "项目：{}".format(item.get("projectName") or project["name"]),
+            "岗位类别：{}".format(item.get("typeName", ""))
+            if item.get("typeName")
+            else "",
+            "岗位职责：{}".format(duty) if duty else "",
+            "任职要求：{}".format(requirement) if requirement else "",
+        ]
+        values = {
+            "external_id": external_id,
+            "title": item["name"],
+            "company": self.source.get("company", "视源股份（CVTE）"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location or self.source.get("location", "待核对"),
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self._education(
+                requirement,
+                self.source.get("education", ""),
+            ),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self._china_datetime(item.get("updatedTime")),
+            "deadline": self._china_datetime(project.get("endTime")),
+            "url": self.source.get(
+                "detail_url_template",
+                "https://campus.cvte.com/position/{position_id}",
+            ).format(position_id=external_id),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        projects = self._target_projects()
+        if not projects:
+            return []
+
+        project_by_id = {str(project["id"]): project for project in projects}
+        positions = self._positions(projects)
+        full_time_names = set(
+            self.source.get("full_time_property_names", ["全职岗位"])
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        exclude_title_keywords = self.source.get(
+            "exclude_title_keywords", []
+        )
+        location_keywords = self.source.get("location_keywords", [])
+
+        jobs = []
+        for item in positions:
+            external_id = str(item.get("id", "") or "").strip()
+            title = str(item.get("name", "") or "").strip()
+            project_id = str(item.get("projectId", "") or "").strip()
+            property_name = str(item.get("propertyName", "") or "").strip()
+            if (
+                not external_id
+                or not title
+                or not project_id
+                or not property_name
+            ):
+                raise ValueError("CVTE岗位缺少稳定 ID、名称、项目或招聘性质")
+            if project_id not in project_by_id:
+                raise ValueError("CVTE岗位接口返回了非目标招聘项目的岗位")
+            if property_name not in full_time_names:
+                continue
+            if self._contains(title, exclude_title_keywords):
+                continue
+
+            location = self._locations(item)
+            searchable = " ".join(
+                str(item.get(field, "") or "")
+                for field in (
+                    "name",
+                    "typeName",
+                    "duty",
+                    "requirement",
+                )
+            )
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(
+                self._to_job(item, project_by_id[project_id], location)
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -2101,6 +2310,7 @@ COLLECTOR_TYPES = {
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
+    "cvte_campus": CvteCampusCollector,
     "fixture_json": FixtureJsonCollector,
     "gdut_campus_notice": GdutCampusNoticeCollector,
     "gdrc_group": GdrcGroupCollector,

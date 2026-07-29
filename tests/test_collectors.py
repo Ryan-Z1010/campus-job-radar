@@ -10,6 +10,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
+    CvteCampusCollector,
     GdrcGroupCollector,
     GdutCampusNoticeCollector,
     GiihgCampusCollector,
@@ -25,6 +26,165 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _cvte_source():
+        return {
+            "id": "cvte",
+            "name": "视源股份（CVTE）",
+            "type": "cvte_campus",
+            "projects_url": "https://campus.cvte.com/api/project",
+            "url": "https://campus.cvte.com/api/position",
+            "company": "视源股份（CVTE）",
+            "company_type": "私企",
+            "location_keywords": ["广州", "上海", "深圳", "北京", "全国"],
+            "target_project_keywords": ["2027届"],
+            "full_time_property_names": ["全职岗位"],
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "智能体",
+                "大模型",
+                "数据",
+                "算法",
+                "机器学习",
+                "软件",
+            ],
+            "exclude_title_keywords": ["博士", "博士后"],
+            "exclude_keywords": ["销售", "市场营销"],
+            "graduation_years": [2027],
+            "education": "具体学历及海外毕业时间要求以岗位为准",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cvte_returns_empty_without_target_cycle_project(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "projects": [
+                    {
+                        "id": "previous",
+                        "name": "CVTE2026届校园招聘",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        jobs = CvteCampusCollector(self._cvte_source()).collect()
+
+        self.assertEqual(jobs, [])
+        fetch.assert_called_once_with(
+            "https://campus.cvte.com/api/project"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cvte_filters_full_time_target_jobs_and_maps_fields(self, fetch):
+        fetch.side_effect = [
+            json.dumps(
+                {
+                    "projects": [
+                        {
+                            "id": "project-2027",
+                            "name": "CVTE2027届实习生项目",
+                            "endTime": 1786345501403,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "projectPositions": [
+                        {
+                            "id": "ai-app",
+                            "name": "AI 应用工程师",
+                            "duty": "负责 RAG 与智能体应用落地。",
+                            "requirement": "计算机相关专业，熟练 Python。",
+                            "projectId": "project-2027",
+                            "projectName": "CVTE2027届实习生项目",
+                            "typeName": "软件类",
+                            "propertyName": "全职岗位",
+                            "areaViews": [{"cityName": "广州"}],
+                            "updatedTime": 1782095833791,
+                        },
+                        {
+                            "id": "ai-intern",
+                            "name": "AI 算法实习生",
+                            "duty": "负责模型训练。",
+                            "requirement": "计算机相关专业。",
+                            "projectId": "project-2027",
+                            "projectName": "CVTE2027届实习生项目",
+                            "typeName": "算法类",
+                            "propertyName": "实习岗位",
+                            "areaViews": [{"cityName": "广州"}],
+                        },
+                        {
+                            "id": "ai-phd",
+                            "name": "多模态大模型高级研究员 - 博士",
+                            "duty": "负责大模型研发。",
+                            "requirement": "博士学历。",
+                            "projectId": "project-2027",
+                            "projectName": "CVTE2027届实习生项目",
+                            "typeName": "研究院",
+                            "propertyName": "全职岗位",
+                            "areaViews": [{"cityName": "广州"}],
+                        },
+                        {
+                            "id": "sales",
+                            "name": "销售工程师",
+                            "duty": "负责市场销售。",
+                            "requirement": "沟通能力强。",
+                            "projectId": "project-2027",
+                            "projectName": "CVTE2027届实习生项目",
+                            "typeName": "商务类",
+                            "propertyName": "全职岗位",
+                            "areaViews": [{"cityName": "广州"}],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        jobs = CvteCampusCollector(self._cvte_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "ai-app")
+        self.assertEqual(jobs[0].title, "AI 应用工程师")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(
+            jobs[0].url,
+            "https://campus.cvte.com/position/ai-app",
+        )
+        self.assertEqual(jobs[0].published_at, "2026-06-22 10:37:13")
+        self.assertEqual(jobs[0].deadline, "2026-08-10 15:05:01")
+        self.assertIn("招聘性质：全职岗位", jobs[0].description)
+        self.assertIn("RAG 与智能体", jobs[0].description)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cvte_rejects_changed_position_schema(self, fetch):
+        fetch.side_effect = [
+            json.dumps(
+                {
+                    "projects": [
+                        {
+                            "id": "project-2027",
+                            "name": "CVTE2027届校园招聘",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            json.dumps(
+                {"positions": []},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError, "缺少 projectPositions 数组"
+        ):
+            CvteCampusCollector(self._cvte_source()).collect()
+
     @staticmethod
     def _gdrc_source():
         return {
