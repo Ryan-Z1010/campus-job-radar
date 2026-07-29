@@ -1387,6 +1387,59 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(CampaignWatchCollector(source).collect(), [])
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_pony_ai_campaign_watch_waits_for_official_2027_marker(self, fetch):
+        fetch.return_value = (
+            "<main><h1>小马智行校园招聘</h1>"
+            "<p>面试9月上旬开始，Offer预计11月发放</p></main>"
+            '<script>const nextCampaign = "2027届校园招聘"</script>'
+        ).encode("utf-8")
+        source = {
+            "id": "pony_ai",
+            "name": "小马智行",
+            "type": "campaign_watch",
+            "homepage": "https://campus.pony.ai/",
+            "required_text": "校园招聘",
+            "target_keywords": ["2027届校园招聘", "2027届秋招"],
+            "title": "小马智行2027届校园招聘已启动",
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pony_ai_campaign_watch_emits_official_2027_link(self, fetch):
+        fetch.return_value = (
+            "<main><h1>小马智行2027届校园招聘</h1>"
+            '<a href="https://ponyai.jobs.feishu.cn/ponycampus">'
+            "2027届校园招聘职位</a></main>"
+        ).encode("utf-8")
+        source = {
+            "id": "pony_ai",
+            "name": "小马智行",
+            "type": "campaign_watch",
+            "homepage": "https://campus.pony.ai/",
+            "required_text": "校园招聘",
+            "target_keywords": ["2027届校园招聘", "2027届秋招"],
+            "link_keywords": ["2027", "校园招聘"],
+            "external_id": "pony-ai-campus-2027-launch",
+            "title": "小马智行2027届校园招聘已启动",
+            "company": "小马智行",
+            "company_type": "私企",
+            "location": "广州、上海、深圳、北京等（以具体岗位为准）",
+            "graduation_years": [2027],
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "pony-ai-campus-2027-launch")
+        self.assertEqual(
+            jobs[0].url, "https://ponyai.jobs.feishu.cn/ponycampus"
+        )
+        self.assertEqual(jobs[0].graduation_years, [2027])
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_csg_anonymous_session_and_job_mapping(self, fetch):
         fixture = (
             Path(__file__).parent / "fixtures" / "csg_search_response.json"
