@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_radar.collectors import (
+    BeisenLegacyCampusCollector,
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
@@ -867,6 +868,133 @@ class CollectorTests(unittest.TestCase):
             + json.dumps(payload, ensure_ascii=False)
             + ";</script>"
         ).encode("utf-8")
+
+    @staticmethod
+    def _beisen_legacy_page(rows, page_links="") -> bytes:
+        rendered_rows = []
+        for job_id, title, company, location, published_at in rows:
+            href = "/xzxq?jobId={}&jc=2&key=".format(job_id)
+            rendered_rows.append(
+                "<tr>"
+                '<td><a href="{href}">{title}</a></td>'
+                '<td><a href="{href}">{company}</a></td>'
+                '<td><a href="{href}">{location}</a></td>'
+                '<td><a href="{href}" class="ptDate">{date}</a></td>'
+                '<td><a href="{href}">详情</a></td>'
+                "</tr>".format(
+                    href=href,
+                    title=title,
+                    company=company,
+                    location=location,
+                    date=published_at,
+                )
+            )
+        return (
+            "<main><table><tr><th>职位名称</th><th>招聘单位</th>"
+            "<th>工作地点</th><th>发布时间</th></tr>"
+            + "".join(rendered_rows)
+            + "</table>"
+            + page_links
+            + "</main>"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _beisen_legacy_source():
+        return {
+            "id": "guangdong_yuehai_group",
+            "name": "广东粤海控股集团",
+            "type": "beisen_legacy_campus",
+            "homepage": "https://gdh.example.com/xzzw",
+            "page_url_template": (
+                "https://gdh.example.com/xzzw/?PageIndex={page}"
+            ),
+            "company_type": "国企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "min_published_at": "2026-07-01",
+            "include_keywords": ["AI", "数据", "软件", "数字化", "信息化"],
+            "exclude_keywords": ["销售", "博士后", "2026届"],
+            "graduation_years": [2027],
+            "description": "请核对岗位详情中的学历、专业与毕业时间要求。",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_legacy_campus_paginates_filters_and_maps_jobs(self, fetch):
+        fetch.side_effect = [
+            self._beisen_legacy_page(
+                [
+                    (
+                        "new-data",
+                        "数据开发工程师",
+                        "广东粤海水务股份有限公司",
+                        "广东省-广州市",
+                        "2026.08.20",
+                    ),
+                    (
+                        "old-model",
+                        "智慧模型研发岗",
+                        "广东省水利电力勘测设计研究院有限公司",
+                        "广东省-广州市",
+                        "2025.03.14",
+                    ),
+                    (
+                        "other-city",
+                        "软件开发工程师",
+                        "粤海水务",
+                        "广东省-东莞市",
+                        "2026.08.21",
+                    ),
+                ],
+                '<a href="/xzzw/?PageIndex=2">下一页</a>',
+            ),
+            self._beisen_legacy_page(
+                [
+                    (
+                        "data-sales",
+                        "数据产品销售岗",
+                        "广东粤海控股集团有限公司",
+                        "广东省-深圳市",
+                        "2026.08.22",
+                    )
+                ],
+                '<a href="/xzzw/?PageIndex=1">上一页</a>',
+            ),
+        ]
+
+        jobs = BeisenLegacyCampusCollector(
+            self._beisen_legacy_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "new-data")
+        self.assertEqual(jobs[0].title, "数据开发工程师")
+        self.assertEqual(jobs[0].company, "广东粤海水务股份有限公司")
+        self.assertEqual(jobs[0].location, "广东省-广州市")
+        self.assertEqual(jobs[0].published_at, "2026-08-20")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://gdh.example.com/xzxq?jobId=new-data&jc=2&key=",
+        )
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_legacy_campus_empty_page_is_successful(self, fetch):
+        fetch.return_value = self._beisen_legacy_page([])
+
+        jobs = BeisenLegacyCampusCollector(
+            self._beisen_legacy_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_legacy_campus_rejects_changed_page(self, fetch):
+        fetch.return_value = "<main>校园招聘系统维护中</main>".encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "未出现预期标识"):
+            BeisenLegacyCampusCollector(
+                self._beisen_legacy_source()
+            ).collect()
 
     @patch("job_radar.collectors.fetch_bytes")
     def test_beisen_campaign_follows_current_pages_and_emits_link(self, fetch):

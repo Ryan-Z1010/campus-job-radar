@@ -348,3 +348,32 @@ fixture、日志、报告或数据库。测试 fixture 中只能使用虚构令�
 
 适配器会校验租户名称和 `Pages` 结构。目标页面尚未出现 2027 标识时正常
 返回空结果；门户配置消失、租户不符或公告页面无法定位时则报告来源错误。
+
+## 北森旧版服务端校园岗位
+
+部分北森门户仍使用服务端渲染的岗位表格，列表页直接提供岗位 ID、职位、
+招聘单位、地点、发布时间和 `PageIndex` 分页。确认详情页的招聘类别确实是
+校园招聘后，可以使用 `beisen_legacy_campus`：
+
+```json
+{
+  "id": "example_beisen_legacy",
+  "name": "示例集团",
+  "type": "beisen_legacy_campus",
+  "enabled": true,
+  "homepage": "https://example.zhiye.com/xzzw",
+  "page_url_template": "https://example.zhiye.com/xzzw/?PageIndex={page}",
+  "required_text": "职位名称",
+  "max_pages": 20,
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "min_published_at": "2026-07-01",
+  "include_keywords": ["AI", "数据", "软件", "数字化", "信息化"],
+  "exclude_keywords": ["实习", "社招", "销售", "2026届"],
+  "graduation_years": [2027]
+}
+```
+
+该适配器只读取公开列表，不登录或自动投递。页面标识或必要字段消失、分页
+超过上限时会报告来源错误；列表正常但没有符合日期、地点和关键词的岗位时
+返回空结果。
