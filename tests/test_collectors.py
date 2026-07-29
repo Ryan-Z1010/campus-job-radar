@@ -9,6 +9,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
+    GdrcGroupCollector,
     GdutCampusNoticeCollector,
     GiihgCampusCollector,
     GzRecruitCompanyCollector,
@@ -22,6 +23,157 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _gdrc_source():
+        return {
+            "id": "guangdong_communications_group",
+            "name": "广东省交通集团",
+            "type": "gdrc_group",
+            "homepage": (
+                "https://jq.gdrc.com/gqzp/"
+                "position.html?type=school"
+            ),
+            "url": "https://jq.gdrc.com/touristApi/listJob",
+            "group_id": "1004",
+            "campus_flag": 0,
+            "page_size": 2,
+            "max_pages": 3,
+            "company": "广东省交通集团有限公司",
+            "company_type": "国企",
+            "location": "广州",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "min_published_at": "2026-07-01",
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "数据",
+                "软件",
+                "计算机",
+                "智能交通",
+            ],
+            "exclude_keywords": ["实习", "社招", "销售", "2026届"],
+            "graduation_years": [2027],
+            "degree_map": {"7": "本科", "9": "硕士", "11": "博士"},
+        }
+
+    @staticmethod
+    def _gdrc_page(items, total=None):
+        return json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "pageData": {
+                        "total": len(items) if total is None else total,
+                        "list": items,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdrc_group_paginates_filters_and_maps_jobs(self, fetch):
+        fetch.side_effect = [
+            self._gdrc_page(
+                [
+                    {
+                        "j_id": "target-agent",
+                        "gid": "1004",
+                        "shzp": "0",
+                        "position": "智能体开发工程师",
+                        "companyname": "广东利通科技投资有限公司",
+                        "address": "广州市黄埔区",
+                        "detailrequirement": (
+                            "负责 RAG、大模型与智能交通应用开发；"
+                            "计算机相关专业硕士优先。"
+                        ),
+                        "degreelevel": "9",
+                        "headcount": "2",
+                        "recruitstartday": "20260820",
+                        "recruitendday": "20260930",
+                    },
+                    {
+                        "j_id": "old-data",
+                        "gid": "1004",
+                        "shzp": "0",
+                        "position": "数据分析岗",
+                        "companyname": "广东省交通集团有限公司",
+                        "address": "广州市",
+                        "detailrequirement": "负责经营数据分析。",
+                        "degreelevel": "7",
+                        "recruitstartday": "20260301",
+                        "recruitendday": "20260630",
+                    },
+                ],
+                total=3,
+            ),
+            self._gdrc_page(
+                [
+                    {
+                        "j_id": "sales-data",
+                        "gid": "1004",
+                        "shzp": "0",
+                        "position": "数据产品销售岗",
+                        "companyname": "广东省交通集团有限公司",
+                        "address": "深圳市",
+                        "detailrequirement": "负责软件产品销售。",
+                        "degreelevel": "7",
+                        "recruitstartday": "20260821",
+                        "recruitendday": "20260930",
+                    }
+                ],
+                total=3,
+            ),
+        ]
+
+        jobs = GdrcGroupCollector(self._gdrc_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "target-agent")
+        self.assertEqual(jobs[0].title, "智能体开发工程师")
+        self.assertEqual(jobs[0].company, "广东利通科技投资有限公司")
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广州市黄埔区")
+        self.assertIn("RAG", jobs[0].description)
+        self.assertIn("招聘人数：2", jobs[0].description)
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].published_at, "2026-08-20")
+        self.assertEqual(jobs[0].deadline, "2026-09-30")
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://jq.gdrc.com/recruitCon/"
+                "recruit-job-detail.html?id=target-agent"
+            ),
+        )
+        self.assertEqual(fetch.call_count, 2)
+        first_call = fetch.call_args_list[0]
+        second_call = fetch.call_args_list[1]
+        self.assertEqual(first_call.kwargs["json_body"]["gid"], "1004")
+        self.assertEqual(first_call.kwargs["json_body"]["shzp"], 0)
+        self.assertEqual(first_call.kwargs["json_body"]["page"], 1)
+        self.assertEqual(second_call.kwargs["json_body"]["page"], 2)
+        self.assertEqual(
+            first_call.kwargs["headers"]["Referer"],
+            self._gdrc_source()["homepage"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdrc_group_empty_result_is_successful(self, fetch):
+        fetch.return_value = self._gdrc_page([], total=0)
+
+        self.assertEqual(GdrcGroupCollector(self._gdrc_source()).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_gdrc_group_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {"code": 0, "data": {"pageData": {"total": 1}}}
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
+            GdrcGroupCollector(self._gdrc_source()).collect()
+
     @staticmethod
     def _giihg_source():
         return {
