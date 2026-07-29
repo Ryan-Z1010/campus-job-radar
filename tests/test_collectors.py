@@ -17,6 +17,7 @@ from job_radar.collectors import (
     HotjobCampusCollector,
     IguopinCompanyCollector,
     JsonApiCollector,
+    LiepinStaticCampusCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
@@ -994,6 +995,158 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未出现预期标识"):
             BeisenLegacyCampusCollector(
                 self._beisen_legacy_source()
+            ).collect()
+
+    @staticmethod
+    def _liepin_static_source():
+        return {
+            "id": "guangdong_guangwu_liepin",
+            "name": "广东省广物控股集团猎聘校招",
+            "type": "liepin_static_campus",
+            "homepage": "https://xy.example.com/guangwu/job.html",
+            "url": "https://xy.example.com/guangwu/js/job3.json",
+            "required_text": "招聘岗位",
+            "company_type": "国企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "数据",
+                "软件",
+                "数字化",
+            ],
+            "exclude_keywords": ["销售", "客服", "实习"],
+            "target_campaign_keywords": [
+                "广物控股集团2027届校园招聘"
+            ],
+            "previous_campaign_keywords": [
+                "广物控股集团2026届校园招聘"
+            ],
+            "graduation_years": [2027],
+            "deadline": "招满即止",
+        }
+
+    @staticmethod
+    def _liepin_static_jobs():
+        return [
+            {
+                "data-id": 20633,
+                "所属企业": "广物金属",
+                "company": "广东广物金属产业集团有限公司",
+                "Department": "数字化中心",
+                "jobName": "AI解决方案专家",
+                "Category": "技术类",
+                "recruits": 1,
+                "edu": "硕士及以上",
+                "major": "计算机、人工智能、数据科学",
+                "Salary": "8000-10000",
+                "address": "广州市",
+                "job_requirements": "熟悉大模型及机器学习。",
+                "job_description": "负责AI解决方案与数据分析。",
+                "link": (
+                    "https://www.duomian.com/job/"
+                    "target-agent.shtml"
+                ),
+            },
+            {
+                "data-id": 20643,
+                "所属企业": "广物汽贸",
+                "company": "广物汽贸股份有限公司",
+                "Department": "业务部",
+                "jobName": "数据产品销售岗",
+                "Category": "业务类",
+                "edu": "本科及以上",
+                "major": "不限",
+                "address": "深圳市",
+                "job_requirements": "负责软件产品销售。",
+                "job_description": "客户拓展。",
+                "link": (
+                    "https://www.duomian.com/job/"
+                    "sales-data.shtml"
+                ),
+            },
+            {
+                "data-id": 20609,
+                "所属企业": "电子口岸",
+                "company": "广东省电子口岸管理有限公司",
+                "Department": "研发部",
+                "jobName": "软件开发岗",
+                "Category": "技术类",
+                "edu": "本科及以上",
+                "major": "计算机",
+                "address": "东莞市",
+                "job_requirements": "熟悉Python。",
+                "job_description": "负责系统开发。",
+                "link": (
+                    "https://www.duomian.com/job/"
+                    "other-city.shtml"
+                ),
+            },
+        ]
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_liepin_static_campus_filters_cycle_and_maps_jobs(self, fetch):
+        fetch.side_effect = [
+            "<main>招聘岗位</main>".encode("utf-8"),
+            json.dumps(
+                self._liepin_static_jobs(), ensure_ascii=False
+            ).encode("utf-8"),
+            (
+                "<main><a href='/project'>"
+                "广物控股集团2027届校园招聘</a></main>"
+            ).encode("utf-8"),
+        ]
+
+        jobs = LiepinStaticCampusCollector(
+            self._liepin_static_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "target-agent")
+        self.assertEqual(jobs[0].title, "AI解决方案专家")
+        self.assertEqual(
+            jobs[0].company,
+            "广东广物金属产业集团有限公司",
+        )
+        self.assertEqual(jobs[0].location, "广州市")
+        self.assertEqual(jobs[0].education, "硕士及以上")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].deadline, "招满即止")
+        self.assertIn("大模型", jobs[0].description)
+        self.assertEqual(fetch.call_count, 3)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_liepin_static_campus_returns_empty_for_previous_cycle(self, fetch):
+        fetch.side_effect = [
+            "<main>招聘岗位</main>".encode("utf-8"),
+            json.dumps(
+                self._liepin_static_jobs(), ensure_ascii=False
+            ).encode("utf-8"),
+            (
+                "<main><a href='/project'>"
+                "广物控股集团2026届校园招聘</a></main>"
+            ).encode("utf-8"),
+        ]
+
+        jobs = LiepinStaticCampusCollector(
+            self._liepin_static_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 3)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_liepin_static_campus_rejects_changed_schema(self, fetch):
+        fetch.side_effect = [
+            "<main>招聘岗位</main>".encode("utf-8"),
+            json.dumps(
+                [{"jobName": "数据分析岗"}], ensure_ascii=False
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "缺少必要字段"):
+            LiepinStaticCampusCollector(
+                self._liepin_static_source()
             ).collect()
 
     @patch("job_radar.collectors.fetch_bytes")
