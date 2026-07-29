@@ -377,3 +377,35 @@ fixture、日志、报告或数据库。测试 fixture 中只能使用虚构令�
 该适配器只读取公开列表，不登录或自动投递。页面标识或必要字段消失、分页
 超过上限时会报告来源错误；列表正常但没有符合日期、地点和关键词的岗位时
 返回空结果。
+
+## 猎聘专题静态校园岗位
+
+部分企业从官网直接链接到猎聘定制专题，专题页面再读取公开静态 JSON 渲染
+岗位。只有当岗位详情还能明确验证当前招聘届别时，才可使用
+`liepin_static_campus`，不能仅凭静态文件最近修改时间推断届别：
+
+```json
+{
+  "id": "example_liepin_campus",
+  "name": "示例集团猎聘校招",
+  "type": "liepin_static_campus",
+  "enabled": true,
+  "homepage": "https://xy.liepin.com/example/job.html",
+  "url": "https://xy.liepin.com/example/js/job.json",
+  "required_text": "招聘岗位",
+  "max_items": 500,
+  "campaign_probe_domains": ["duomian.com"],
+  "max_campaign_probes": 5,
+  "company_type": "国企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "include_keywords": ["AI", "数据", "软件", "数字化"],
+  "exclude_keywords": ["实习", "社招", "销售"],
+  "target_campaign_keywords": ["示例集团2027届校园招聘"],
+  "previous_campaign_keywords": ["示例集团2026届校园招聘"],
+  "graduation_years": [2027]
+}
+```
+
+适配器先读取专题和静态岗位数组，再按地点及方向筛出候选岗位，并优先访问
+公开的多面岗位详情确认项目届别。详情仍属于上一届时正常返回空结果；既
+无法确认目标届别、也没有明确上一届标识时报告来源错误，避免静默误报。

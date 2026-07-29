@@ -1768,6 +1768,192 @@ class BeisenLegacyCampusCollector(Collector):
         raise ValueError("北森旧版校招岗位分页超过配置上限")
 
 
+class LiepinStaticCampusCollector(Collector):
+    """Collect a verified campaign from a public Liepin static job dataset."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _visible_text(body: str) -> str:
+        parser = _LinkParser()
+        parser.feed(body)
+        return " ".join(" ".join(parser.text_parts).split())
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        page_body = fetch_bytes(homepage).decode("utf-8", errors="replace")
+        required_text = self.source.get("required_text", "招聘岗位")
+        if required_text and required_text not in page_body:
+            raise ValueError("猎聘静态校招页未出现预期标识，可能已经改版")
+
+        try:
+            items = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    headers={"Referer": homepage},
+                ).decode("utf-8-sig")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("猎聘静态校招岗位返回了无效 JSON") from exc
+        if not isinstance(items, list):
+            raise ValueError("猎聘静态校招岗位缺少岗位数组")
+        if len(items) > max(1, int(self.source.get("max_items", 500))):
+            raise ValueError("猎聘静态校招岗位超过配置数量上限")
+
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        candidates = []
+        seen_ids = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("猎聘静态校招岗位列表元素结构异常")
+            title = str(
+                item.get("jobName") or item.get("jobTitle") or ""
+            ).strip()
+            company = str(item.get("company") or "").strip()
+            location = str(
+                item.get("address") or item.get("workplace") or ""
+            ).strip()
+            link = str(
+                item.get("link") or item.get("shareUrl") or ""
+            ).strip()
+            if not title or not company or not location or not link:
+                raise ValueError("猎聘静态校招岗位缺少必要字段")
+
+            external_id = (
+                urlsplit(link).path.rstrip("/").split("/")[-1]
+                .removesuffix(".shtml")
+            )
+            if not external_id:
+                raise ValueError("猎聘静态校招岗位缺少稳定 ID")
+            if external_id in seen_ids:
+                continue
+            seen_ids.add(external_id)
+
+            searchable = " ".join(
+                str(item.get(field) or "")
+                for field in (
+                    "jobName",
+                    "jobTitle",
+                    "Department",
+                    "Category",
+                    "major",
+                    "job_requirements",
+                    "job_description",
+                    "所属企业",
+                    "company",
+                )
+            )
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            candidates.append((external_id, item, title, company, location, link))
+
+        if not candidates:
+            return []
+
+        target_campaign_keywords = self.source.get(
+            "target_campaign_keywords", []
+        )
+        previous_campaign_keywords = self.source.get(
+            "previous_campaign_keywords", []
+        )
+        if not target_campaign_keywords:
+            raise ValueError("猎聘静态校招来源未配置目标届别")
+
+        preferred_domains = self.source.get(
+            "campaign_probe_domains", ["duomian.com"]
+        )
+        probe_links = list(dict.fromkeys(item[5] for item in candidates))
+        probe_links.sort(
+            key=lambda link: 0
+            if any(
+                domain.lower() in urlsplit(link).netloc.lower()
+                for domain in preferred_domains
+            )
+            else 1
+        )
+        campaign_active = False
+        max_probes = max(1, int(self.source.get("max_campaign_probes", 5)))
+        for link in probe_links[:max_probes]:
+            detail_body = fetch_bytes(
+                link,
+                headers={"Referer": homepage},
+            ).decode("utf-8", errors="replace")
+            visible_text = self._visible_text(detail_body)
+            if self._contains(visible_text, target_campaign_keywords):
+                campaign_active = True
+                break
+            if previous_campaign_keywords and self._contains(
+                visible_text, previous_campaign_keywords
+            ):
+                return []
+        if not campaign_active:
+            raise ValueError("猎聘静态校招岗位无法确认目标届别")
+
+        jobs = []
+        for external_id, item, title, company, location, link in candidates:
+            description_parts = []
+            owner = _html_fragment_text(item.get("所属企业", ""))
+            department = _html_fragment_text(item.get("Department", ""))
+            category = _html_fragment_text(item.get("Category", ""))
+            major = _html_fragment_text(item.get("major", ""))
+            requirements = _html_fragment_text(
+                item.get("job_requirements", "")
+            )
+            duties = _html_fragment_text(item.get("job_description", ""))
+            salary = _html_fragment_text(item.get("Salary", ""))
+            recruits = str(item.get("recruits") or "").strip()
+            if owner and owner != company:
+                description_parts.append("所属企业：{}".format(owner))
+            if department:
+                description_parts.append("部门/方向：{}".format(department))
+            if category:
+                description_parts.append("岗位类别：{}".format(category))
+            if major:
+                description_parts.append("专业要求：{}".format(major))
+            if requirements:
+                description_parts.append("任职要求：{}".format(requirements))
+            if duties:
+                description_parts.append("职位描述：{}".format(duties))
+            if salary:
+                description_parts.append("参考薪资：{}".format(salary))
+            if recruits:
+                description_parts.append("招聘人数：{}".format(recruits))
+
+            values = {
+                "external_id": external_id,
+                "title": title,
+                "company": company,
+                "company_type": self.source.get("company_type", "未知"),
+                "location": location,
+                "description": "｜".join(description_parts),
+                "education": str(item.get("edu") or ""),
+                "graduation_years": self.source.get(
+                    "graduation_years", []
+                ),
+                "deadline": self.source.get("deadline", ""),
+                "url": link,
+                "source_name": self.source["name"],
+            }
+            jobs.append(JobPosting.from_mapping(values))
+        return jobs
+
+
 class GdutCampusNoticeCollector(Collector):
     """Scan recent public GDUT recruitment notices for a target campaign."""
 
@@ -1923,6 +2109,7 @@ COLLECTOR_TYPES = {
     "hotjob_campus": HotjobCampusCollector,
     "iguopin_company": IguopinCompanyCollector,
     "json_api": JsonApiCollector,
+    "liepin_static_campus": LiepinStaticCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
