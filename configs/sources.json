@@ -1387,6 +1387,25 @@
       "note": "已接入广州工控集团官网校园招聘页面直接使用的公开岗位接口；固定type=1，只保留2026-07-01后发布、位于目标城市且与AI/数据/工业互联网/数字化相关的岗位，并排除旧届别、实习和销售岗位。当前校园招聘岗位总数为0时正常返回空结果。"
     },
     {
+      "id": "weride",
+      "name": "文远知行",
+      "type": "web_notice",
+      "enabled": true,
+      "homepage": "https://www.weride.ai/zh/posts/gjekqtwayx4acykbjqdt2eyi",
+      "url": "https://app.mokahr.com/campus_apply/jingchi/2137",
+      "required_text": "文远知行2027届秋季校园招聘已全面启动",
+      "external_id": "weride-campus-2027-launch",
+      "title": "文远知行2027届秋季校园招聘已全面启动",
+      "company": "文远知行",
+      "company_type": "私企",
+      "location": "广州、北京等（以具体岗位为准）",
+      "description": "文远知行官网已宣布2027届秋季校园招聘全面启动；请进入官方校招入口优先核对人工智能、计算机视觉、机器学习、深度学习、强化学习、数据、算法、软件、仿真和自动驾驶相关岗位。",
+      "education": "2027届校园招聘，具体学历、专业和海外毕业时间要求以岗位为准",
+      "graduation_years": [2027],
+      "deadline": "以岗位为准",
+      "note": "使用文远知行官网正式发布的2027届秋招文章验证活动已启动，并把提醒链接指向官网加入我们页面公开列出的Moka中国校园招聘入口。Moka入口对普通脚本出现重定向循环，因此当前不模拟会话、不复制Cookie或请求签名，只发送一次官方活动提醒。"
+    },
+    {
       "id": "xpeng",
       "name": "小鹏集团",
       "type": "web_notice",

@@ -1550,6 +1550,39 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(jobs[0].url, "https://example.com/campus/2027")
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_weride_web_notice_maps_official_2027_campaign(self, fetch):
+        fetch.return_value = (
+            "<h1>文远知行2027届秋季校招启动</h1>"
+            "<p>文远知行2027届秋季校园招聘已全面启动！</p>"
+        ).encode("utf-8")
+        source = {
+            "id": "weride",
+            "name": "文远知行",
+            "type": "web_notice",
+            "homepage": "https://www.weride.ai/zh/posts/campus-2027",
+            "url": "https://app.mokahr.com/campus_apply/jingchi/2137",
+            "required_text": "文远知行2027届秋季校园招聘已全面启动",
+            "external_id": "weride-campus-2027-launch",
+            "title": "文远知行2027届秋季校园招聘已全面启动",
+            "company": "文远知行",
+            "company_type": "私企",
+            "location": "广州、北京等（以具体岗位为准）",
+            "graduation_years": [2027],
+        }
+
+        jobs = WebNoticeCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "weride-campus-2027-launch")
+        self.assertEqual(jobs[0].company, "文远知行")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://app.mokahr.com/campus_apply/jingchi/2137",
+        )
+        fetch.assert_called_once_with(source["homepage"])
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_zhaopin_company_filters_cycle_and_maps_target_jobs(self, fetch):
         fetch.return_value = (
             Path(__file__).parent / "fixtures" / "zhaopin_unicom_company.html"
