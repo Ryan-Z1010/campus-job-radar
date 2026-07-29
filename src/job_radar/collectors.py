@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
-from urllib.parse import quote, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 from .models import JobPosting
@@ -1601,6 +1601,173 @@ class BeisenPortalCampaignCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class _BeisenLegacyJobListParser(HTMLParser):
+    """Parse the server-rendered job table used by older Beisen portals."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: List[Dict[str, Any]] = []
+        self.max_page = 1
+        self._in_row = False
+        self._in_cell = False
+        self._cells: List[Dict[str, str]] = []
+        self._cell_parts: List[str] = []
+        self._cell_href = ""
+
+    def handle_starttag(self, tag: str, attrs: Iterable[Any]) -> None:
+        tag = tag.lower()
+        values = dict(attrs)
+        if tag == "a":
+            href = values.get("href", "")
+            page_match = re.search(r"[?&]PageIndex=(\d+)", href, re.I)
+            if page_match:
+                self.max_page = max(self.max_page, int(page_match.group(1)))
+            if self._in_cell and not self._cell_href:
+                self._cell_href = href
+        elif tag == "tr":
+            self._in_row = True
+            self._cells = []
+        elif tag == "td" and self._in_row:
+            self._in_cell = True
+            self._cell_parts = []
+            self._cell_href = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "td" and self._in_cell:
+            self._cells.append(
+                {
+                    "text": " ".join(" ".join(self._cell_parts).split()),
+                    "href": self._cell_href,
+                }
+            )
+            self._in_cell = False
+        elif tag == "tr" and self._in_row:
+            if (
+                len(self._cells) == 5
+                and "/xzxq" in self._cells[0]["href"].lower()
+            ):
+                self.rows.append(
+                    {
+                        "title": self._cells[0]["text"],
+                        "href": self._cells[0]["href"],
+                        "company": self._cells[1]["text"],
+                        "location": self._cells[2]["text"],
+                        "published_at": self._cells[3]["text"],
+                    }
+                )
+            self._in_row = False
+            self._cells = []
+
+
+class BeisenLegacyCampusCollector(Collector):
+    """Collect campus jobs from a server-rendered legacy Beisen portal."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        page_url_template = self.source.get(
+            "page_url_template",
+            homepage.rstrip("/") + "/?PageIndex={page}",
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = self.source.get("min_published_at", "")
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+
+        jobs = []
+        seen_ids = set()
+        last_page = 1
+        for page in range(1, max_pages + 1):
+            page_url = (
+                homepage
+                if page == 1
+                else page_url_template.format(page=page)
+            )
+            body = fetch_bytes(page_url).decode("utf-8", errors="replace")
+            required_text = self.source.get("required_text", "职位名称")
+            if required_text and required_text not in body:
+                raise ValueError("北森旧版校招页未出现预期标识，可能已经改版")
+
+            parser = _BeisenLegacyJobListParser()
+            parser.feed(body)
+            last_page = max(last_page, parser.max_page)
+            for item in parser.rows:
+                title = item["title"]
+                company = item["company"]
+                location = item["location"]
+                published_at = item["published_at"].replace(".", "-")[:10]
+                href = item["href"]
+                job_ids = parse_qs(urlsplit(href).query).get("jobId", [])
+                if (
+                    not title
+                    or not company
+                    or not location
+                    or not published_at
+                    or not job_ids
+                ):
+                    raise ValueError("北森旧版校招岗位缺少必要字段")
+
+                external_id = str(job_ids[0])
+                if external_id in seen_ids:
+                    continue
+                seen_ids.add(external_id)
+                if min_published_at and published_at < min_published_at[:10]:
+                    continue
+
+                searchable = " ".join([title, company, location])
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_keywords and not self._contains(
+                    searchable, include_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                values = {
+                    "external_id": external_id,
+                    "title": title,
+                    "company": company,
+                    "company_type": self.source.get(
+                        "company_type", "未知"
+                    ),
+                    "location": location,
+                    "description": self.source.get("description", ""),
+                    "education": self.source.get(
+                        "education",
+                        "校园招聘，具体学历要求以岗位详情为准",
+                    ),
+                    "graduation_years": self.source.get(
+                        "graduation_years", []
+                    ),
+                    "published_at": published_at,
+                    "deadline": "",
+                    "url": urljoin(homepage, href),
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            if page >= last_page:
+                return jobs
+
+        raise ValueError("北森旧版校招岗位分页超过配置上限")
+
+
 class GdutCampusNoticeCollector(Collector):
     """Scan recent public GDUT recruitment notices for a target campaign."""
 
@@ -1744,6 +1911,7 @@ class HtmlLinksCollector(Collector):
 
 
 COLLECTOR_TYPES = {
+    "beisen_legacy_campus": BeisenLegacyCampusCollector,
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
