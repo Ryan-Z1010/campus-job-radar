@@ -19,6 +19,7 @@ from job_radar.collectors import (
     IguopinCompanyCollector,
     JsonApiCollector,
     LiepinStaticCampusCollector,
+    NeteaseGameCampusCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
@@ -26,6 +27,218 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _netease_game_source():
+        return {
+            "id": "netease_game",
+            "name": "网易广州（网易游戏互娱）",
+            "type": "netease_game_campus",
+            "navigation_url": (
+                "https://campus.game.163.com/api/campuspc/"
+                "project/navigation/list"
+            ),
+            "url": (
+                "https://campus.game.163.com/api/campuspc/"
+                "position/getJobList"
+            ),
+            "detail_url_template": (
+                "https://campus.game.163.com/app/detail/index"
+                "?id={position_id}"
+            ),
+            "company": "网易游戏（互娱）",
+            "company_type": "私企",
+            "project_group_title": "应届生",
+            "target_project_keywords": ["网易互娱2027届校园招聘"],
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "Agent",
+                "大模型",
+                "数据",
+                "算法",
+                "软件",
+                "开发",
+                "测试",
+            ],
+            "exclude_keywords": ["销售", "市场营销"],
+            "exclude_position_types": ["游戏艺术", "游戏策划", "运营"],
+            "excluded_type_title_exceptions": ["AI+策划"],
+            "page_size": 2,
+            "max_pages": 3,
+            "graduation_years": [2027],
+            "education": "具体学历及海外毕业时间要求以岗位为准",
+            "deadline": "以官方公告及岗位为准",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_netease_game_returns_empty_without_target_project(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": 200,
+                "data": [
+                    {
+                        "title": "应届生",
+                        "children": [
+                            {
+                                "title": "网易互联网2026届校园招聘",
+                                "link": (
+                                    "https://campus.163.com/app/job/"
+                                    "position?id=69"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        jobs = NeteaseGameCampusCollector(
+            self._netease_game_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        fetch.assert_called_once_with(
+            (
+                "https://campus.game.163.com/api/campuspc/"
+                "project/navigation/list"
+            )
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_netease_game_paginates_filters_and_maps_jobs(self, fetch):
+        navigation = {
+            "code": 200,
+            "data": [
+                {
+                    "title": "应届生",
+                    "children": [
+                        {
+                            "title": "网易互娱2027届校园招聘",
+                            "link": (
+                                "https://campus.game.163.com/app/job/"
+                                "position?id=102"
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        ai_job = {
+            "id": 4732,
+            "positionName": "AI Agent 工程师（游戏研发方向）",
+            "projectId": 102,
+            "positionTypeName": "游戏程序",
+            "workPlaceName": "杭州,上海,广州",
+            "positionDescription": "负责多模态 Agent 研发。",
+            "positionRequirement": "本科及以上，2027届应届生。",
+            "tagList": [{"id": 1, "name": "AI Agent开发"}],
+            "updateTime": 1782095833791,
+        }
+        art_job = {
+            "id": 4733,
+            "positionName": "游戏技术美术工程师",
+            "projectId": 102,
+            "positionTypeName": "游戏艺术",
+            "workPlaceName": "杭州,上海,广州",
+            "positionDescription": "负责 AIGC 艺术制作。",
+            "positionRequirement": "本科及以上。",
+            "tagList": [{"id": 2, "name": "艺术×技术跨界"}],
+        }
+        overseas_job = {
+            "id": 4771,
+            "positionName": "Application Development Engineer",
+            "projectId": 102,
+            "positionTypeName": "技术",
+            "workPlaceName": "新加坡",
+            "positionDescription": "Software development.",
+            "positionRequirement": "Bachelor degree.",
+            "tagList": [],
+        }
+        fetch.side_effect = [
+            json.dumps(navigation, ensure_ascii=False).encode("utf-8"),
+            json.dumps(
+                {
+                    "code": 200,
+                    "data": {
+                        "total": 3,
+                        "pages": 2,
+                        "list": [ai_job, art_job],
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "code": 200,
+                    "data": {
+                        "total": 3,
+                        "pages": 2,
+                        "list": [overseas_job],
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        jobs = NeteaseGameCampusCollector(
+            self._netease_game_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "4732")
+        self.assertEqual(jobs[0].company, "网易游戏（互娱）")
+        self.assertEqual(jobs[0].location, "杭州,上海,广州")
+        self.assertEqual(jobs[0].education, "本科")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://campus.game.163.com/app/detail/index?id=4732",
+        )
+        self.assertEqual(jobs[0].published_at, "2026-06-22 10:37:13")
+        self.assertIn("AI Agent开发", jobs[0].description)
+        self.assertIn("多模态 Agent", jobs[0].description)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertIn("page=2", fetch.call_args_list[2].args[0])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_netease_game_rejects_changed_position_schema(self, fetch):
+        fetch.side_effect = [
+            json.dumps(
+                {
+                    "code": 200,
+                    "data": [
+                        {
+                            "title": "应届生",
+                            "children": [
+                                {
+                                    "title": "网易互娱2027届校园招聘",
+                                    "link": (
+                                        "https://campus.game.163.com/app/job/"
+                                        "position?id=102"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "code": 200,
+                    "data": {"total": 1, "pages": 1, "positions": []},
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "岗位分页结构异常"):
+            NeteaseGameCampusCollector(
+                self._netease_game_source()
+            ).collect()
+
     @staticmethod
     def _cvte_source():
         return {

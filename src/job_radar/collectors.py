@@ -1245,6 +1245,300 @@ class CvteCampusCollector(Collector):
         return jobs
 
 
+class NeteaseGameCampusCollector(Collector):
+    """Collect target-cycle jobs from NetEase Games' public campus APIs."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode(raw: bytes, label: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("网易互娱{}接口返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict) or payload.get("code") != 200:
+            raise ValueError("网易互娱{}接口响应异常".format(label))
+        return payload
+
+    @staticmethod
+    def _china_datetime(value: Any) -> str:
+        try:
+            milliseconds = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if milliseconds <= 0:
+            return ""
+        china_time = timezone(timedelta(hours=8))
+        return datetime.fromtimestamp(
+            milliseconds / 1000, tz=china_time
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _education(text: str, fallback: str) -> str:
+        levels = [
+            level
+            for level in ("博士", "硕士", "本科", "大专")
+            if level in text
+        ]
+        return "/".join(levels) or fallback
+
+    def _target_project(self) -> Dict[str, str] | None:
+        payload = self._decode(
+            fetch_bytes(self.source["navigation_url"]),
+            "导航",
+        )
+        navigation = payload.get("data")
+        if not isinstance(navigation, list):
+            raise ValueError("网易互娱导航接口缺少 data 数组")
+        if any(not isinstance(group, dict) for group in navigation):
+            raise ValueError("网易互娱导航分组结构异常")
+
+        group_title = self.source.get("project_group_title", "应届生")
+        groups = [
+            group
+            for group in navigation
+            if str(group.get("title", "") or "").strip() == group_title
+        ]
+        if len(groups) != 1:
+            raise ValueError("网易互娱导航接口缺少唯一的应届生分组")
+        children = groups[0].get("children")
+        if not isinstance(children, list):
+            raise ValueError("网易互娱应届生分组缺少 children 数组")
+        if any(not isinstance(child, dict) for child in children):
+            raise ValueError("网易互娱应届生项目结构异常")
+
+        target_keywords = self.source.get("target_project_keywords", [])
+        targets = []
+        for child in children:
+            title = str(child.get("title", "") or "").strip()
+            link = str(child.get("link", "") or "").strip()
+            if not title or not link:
+                raise ValueError("网易互娱应届生项目缺少名称或链接")
+            if target_keywords and not self._contains(
+                title, target_keywords
+            ):
+                continue
+            targets.append({"title": title, "link": link})
+
+        if not targets:
+            return None
+        if len(targets) != 1:
+            raise ValueError("网易互娱导航接口匹配到多个目标招聘项目")
+
+        project = targets[0]
+        parsed = urlsplit(project["link"])
+        expected_host = self.source.get(
+            "project_link_host", "campus.game.163.com"
+        )
+        expected_path = self.source.get(
+            "project_link_path", "/app/job/position"
+        )
+        project_ids = parse_qs(parsed.query).get("id", [])
+        if (
+            parsed.hostname != expected_host
+            or parsed.path != expected_path
+            or len(project_ids) != 1
+            or not project_ids[0].isdigit()
+        ):
+            raise ValueError("网易互娱目标招聘项目链接结构异常")
+        project["id"] = project_ids[0]
+        return project
+
+    def _positions(self, project_id: str) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 100))
+        max_pages = int(self.source.get("max_pages", 10))
+        if page_size <= 0 or max_pages <= 0:
+            raise ValueError("网易互娱岗位分页配置必须为正整数")
+
+        positions = []
+        seen_ids = set()
+        total = None
+        for page in range(1, max_pages + 1):
+            query = urlencode(
+                {
+                    "projectId": project_id,
+                    "page": page,
+                    "pageSize": page_size,
+                }
+            )
+            separator = "&" if "?" in self.source["url"] else "?"
+            payload = self._decode(
+                fetch_bytes(
+                    "{}{}{}".format(self.source["url"], separator, query)
+                ),
+                "岗位",
+            )
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise ValueError("网易互娱岗位接口缺少 data 对象")
+            page_items = data.get("list")
+            current_total = data.get("total")
+            pages = data.get("pages")
+            if (
+                not isinstance(page_items, list)
+                or not isinstance(current_total, int)
+                or current_total < 0
+                or not isinstance(pages, int)
+                or pages < 0
+            ):
+                raise ValueError("网易互娱岗位分页结构异常")
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("网易互娱岗位列表元素结构异常")
+            if total is None:
+                total = current_total
+                if pages > max_pages:
+                    raise ValueError("网易互娱岗位页数超过配置上限")
+            elif current_total != total:
+                raise ValueError("网易互娱岗位分页总数发生变化")
+
+            for item in page_items:
+                external_id = str(item.get("id", "") or "").strip()
+                if not external_id:
+                    raise ValueError("网易互娱岗位缺少稳定 ID")
+                if external_id in seen_ids:
+                    raise ValueError("网易互娱岗位分页返回了重复 ID")
+                seen_ids.add(external_id)
+                positions.append(item)
+
+            if len(positions) >= total:
+                break
+            if not page_items or page >= pages:
+                break
+
+        if total is None or len(positions) != total:
+            raise ValueError("网易互娱岗位没有完整返回全部分页")
+        return positions
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        project: Dict[str, str],
+    ) -> JobPosting:
+        external_id = str(item["id"])
+        requirement = str(
+            item.get("positionRequirement", "") or ""
+        ).strip()
+        duty = str(item.get("positionDescription", "") or "").strip()
+        tags = item.get("tagList")
+        if not isinstance(tags, list) or any(
+            not isinstance(tag, dict) for tag in tags
+        ):
+            raise ValueError("网易互娱岗位标签结构异常")
+        tag_names = [
+            str(tag.get("name", "") or "").strip()
+            for tag in tags
+            if str(tag.get("name", "") or "").strip()
+        ]
+        description_parts = [
+            "项目：{}".format(project["title"]),
+            "岗位类别：{}".format(item.get("positionTypeName", ""))
+            if item.get("positionTypeName")
+            else "",
+            "岗位标签：{}".format("、".join(tag_names))
+            if tag_names
+            else "",
+            "岗位职责：{}".format(duty) if duty else "",
+            "任职要求：{}".format(requirement) if requirement else "",
+        ]
+        values = {
+            "external_id": external_id,
+            "title": str(item["positionName"]).strip(),
+            "company": self.source.get("company", "网易游戏（互娱）"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": str(item["workPlaceName"]).strip(),
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self._education(
+                requirement,
+                self.source.get("education", ""),
+            ),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self._china_datetime(item.get("updateTime")),
+            "deadline": self.source.get("deadline", ""),
+            "url": self.source.get(
+                "detail_url_template",
+                (
+                    "https://campus.game.163.com/app/detail/index"
+                    "?id={position_id}"
+                ),
+            ).format(position_id=external_id, project_id=project["id"]),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        project = self._target_project()
+        if project is None:
+            return []
+
+        positions = self._positions(project["id"])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        exclude_position_types = set(
+            self.source.get("exclude_position_types", [])
+        )
+        excluded_type_title_exceptions = self.source.get(
+            "excluded_type_title_exceptions", []
+        )
+        location_keywords = self.source.get("location_keywords", [])
+        jobs = []
+        for item in positions:
+            external_id = str(item.get("id", "") or "").strip()
+            title = str(item.get("positionName", "") or "").strip()
+            project_id = str(item.get("projectId", "") or "").strip()
+            position_type = str(
+                item.get("positionTypeName", "") or ""
+            ).strip()
+            location = str(item.get("workPlaceName", "") or "").strip()
+            if not external_id or not title or not project_id or not location:
+                raise ValueError("网易互娱岗位缺少 ID、名称、项目或工作地点")
+            if project_id != project["id"]:
+                raise ValueError("网易互娱岗位接口返回了非目标招聘项目的岗位")
+            if (
+                position_type in exclude_position_types
+                and not self._contains(
+                    title, excluded_type_title_exceptions
+                )
+            ):
+                continue
+
+            tags = item.get("tagList")
+            if not isinstance(tags, list) or any(
+                not isinstance(tag, dict) for tag in tags
+            ):
+                raise ValueError("网易互娱岗位标签结构异常")
+            searchable = " ".join(
+                [
+                    title,
+                    position_type,
+                    str(item.get("positionDescription", "") or ""),
+                    str(item.get("positionRequirement", "") or ""),
+                    " ".join(
+                        str(tag.get("name", "") or "") for tag in tags
+                    ),
+                ]
+            )
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item, project))
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -2320,6 +2614,7 @@ COLLECTOR_TYPES = {
     "iguopin_company": IguopinCompanyCollector,
     "json_api": JsonApiCollector,
     "liepin_static_campus": LiepinStaticCampusCollector,
+    "netease_game_campus": NeteaseGameCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
