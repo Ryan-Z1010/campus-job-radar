@@ -298,6 +298,43 @@ Token 或用于绕过访问控制的字段。
 随后请求 `/webPost/search`。令牌只保存在当前进程内存中，不写入配置、
 fixture、日志、报告或数据库。测试 fixture 中只能使用虚构令牌与脱敏岗位。
 
+## Moka 公开校园岗位
+
+部分 Moka 校招门户会为未登录访客创建匿名 Cookie 会话，在页面
+`#init-data` 中公开机构、站点、招聘模式和 AES IV，并在每次岗位接口响应中
+提供本次响应的 AES 密钥。确认这些参数均由公开前端直接使用、请求不需要
+账号、验证码、私有令牌或动态签名后，可以使用 `moka_campus`：
+
+```json
+{
+  "id": "example_moka",
+  "name": "示例公司",
+  "type": "moka_campus",
+  "enabled": true,
+  "homepage": "https://app-tc.mokahr.com/campus-recruitment/example/12345/",
+  "url": "https://app-tc.mokahr.com/api/outer/ats-apply/website/jobs/v2",
+  "detail_url": "https://app-tc.mokahr.com/api/outer/ats-apply/website/job",
+  "org_id": "example",
+  "site_id": 12345,
+  "company": "示例公司",
+  "company_type": "私企",
+  "location_keywords": ["广州", "上海", "深圳", "北京"],
+  "target_cycle_keywords": ["2027届"],
+  "include_keywords": ["AI", "数据", "算法", "软件", "开发"],
+  "exclude_title_keywords": ["实习", "暑期"],
+  "exclude_commitments": ["实习"],
+  "page_size": 30,
+  "max_pages": 10,
+  "graduation_years": [2027]
+}
+```
+
+采集器会校验机构 ID、公司名称、站点编号和 `campus` 模式，并完整读取分页
+及岗位详情。Moka 当前岗位列表每页最多返回 30 条，因此不要提高
+`page_size`。地点字段为空时保留岗位并标记待核对，避免因官网字段缺失漏报；
+地点已填写时再按目标城市筛选。若站点改为登录后可见、增加验证码或私有签名，
+应停用岗位级采集器并退回官方活动提醒。
+
 ## 招聘启动监控
 
 当下一届校招专题尚未发布时，不要猜测专题域名，也不要把上一届页面当成
