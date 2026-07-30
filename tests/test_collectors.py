@@ -25,12 +25,194 @@ from job_radar.collectors import (
     MokaCampusCollector,
     NeteaseGameCampusCollector,
     NoticeJsonCollector,
+    SheinCampusCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
 )
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _shein_source():
+        return {
+            "id": "shein",
+            "name": "SHEIN",
+            "type": "shein_campus",
+            "homepage": "https://careers.shein.cn/Students-%26-Graduates",
+            "url": (
+                "https://careers.shein.cn/api/v1/open/grw/front/jobPage"
+            ),
+            "company": "SHEIN",
+            "company_type": "私企",
+            "country_ids": ["CHN"],
+            "city_ids": ["1003", "1010", "1004", "1008"],
+            "job_category_ids": ["xxjsl"],
+            "campus_job_type_id": "CAMPUS",
+            "target_cycle_keywords": ["2027届", "2027 校招"],
+            "include_keywords": ["AI", "数据", "算法", "开发"],
+            "exclude_keywords": ["实习", "销售"],
+            "page_size": 2,
+            "max_pages": 3,
+            "graduation_years": [2027],
+            "education": "具体学历要求以岗位为准",
+            "deadline": "以官方公告及岗位为准",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_shein_paginates_filters_and_maps_jobs(self, fetch):
+        ai_job = {
+            "jobId": "shein-ai-2027",
+            "jobTitle": "2027届 AI Agent 开发工程师",
+            "jobCategoryId": "xxjsl",
+            "jobCategoryName": "信息技术类",
+            "countryId": "CHN",
+            "countryName": "中国",
+            "jobTypeId": "CAMPUS",
+            "releaseDate": "2026-07-30 09:00:00",
+            "description": (
+                "负责大模型智能体研发。<br>要求计算机相关专业，硕士优先。"
+            ),
+            "jobDetailUrl": (
+                "https://careers.shein.cn/JobDetail?"
+                "jobId=shein-ai-2027"
+            ),
+            "cityInfos": [
+                {"cityId": "1003", "cityName": "广州市", "jobNum": 1},
+                {"cityId": "1004", "cityName": "深圳市", "jobNum": 1},
+            ],
+        }
+        previous_cycle = {
+            "jobId": "shein-data-2026",
+            "jobTitle": "2026届 数据开发工程师",
+            "jobCategoryId": "xxjsl",
+            "jobCategoryName": "信息技术类",
+            "countryId": "CHN",
+            "countryName": "中国",
+            "jobTypeId": "CAMPUS",
+            "releaseDate": "2025-08-01 09:00:00",
+            "description": "负责数据仓库开发。",
+            "jobDetailUrl": "https://careers.shein.cn/old",
+            "cityInfos": [
+                {"cityId": "1010", "cityName": "上海市", "jobNum": 1}
+            ],
+        }
+        sales_job = {
+            "jobId": "shein-sales-2027",
+            "jobTitle": "2027 校招 数据产品销售",
+            "jobCategoryId": "xxjsl",
+            "jobCategoryName": "信息技术类",
+            "countryId": "CHN",
+            "countryName": "中国",
+            "jobTypeId": "CAMPUS",
+            "releaseDate": "2026-07-30 10:00:00",
+            "description": "负责数据产品销售。",
+            "jobDetailUrl": "https://careers.shein.cn/sales",
+            "cityInfos": [
+                {"cityId": "1008", "cityName": "北京市", "jobNum": 1}
+            ],
+        }
+        fetch.side_effect = [
+            json.dumps(
+                {
+                    "code": "0",
+                    "msg": "OK",
+                    "info": {
+                        "current": 1,
+                        "size": 2,
+                        "total": 3,
+                        "records": [ai_job, previous_cycle],
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "code": "0",
+                    "msg": "OK",
+                    "info": {
+                        "current": 2,
+                        "size": 2,
+                        "total": 3,
+                        "records": [sales_job],
+                    },
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        jobs = SheinCampusCollector(self._shein_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "shein-ai-2027")
+        self.assertEqual(jobs[0].title, "2027届 AI Agent 开发工程师")
+        self.assertEqual(jobs[0].company, "SHEIN")
+        self.assertEqual(jobs[0].location, "广州市/深圳市")
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://careers.shein.cn/JobDetail?"
+            "jobId=shein-ai-2027",
+        )
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs["json_body"],
+            {
+                "current": 1,
+                "cityName": "",
+                "countryIds": ["CHN"],
+                "cityIds": ["1003", "1010", "1004", "1008"],
+                "jobCategoryIds": ["xxjsl"],
+                "jobTypeIds": ["CAMPUS"],
+                "key": "",
+                "langCode": "CN",
+                "size": 2,
+            },
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["json_body"]["current"], 2
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_shein_empty_result_is_successful(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": "0",
+                "msg": "OK",
+                "info": {
+                    "current": 1,
+                    "size": 100,
+                    "total": 0,
+                    "records": [],
+                },
+            }
+        ).encode("utf-8")
+        source = self._shein_source()
+        source["page_size"] = 100
+
+        jobs = SheinCampusCollector(source).collect()
+
+        self.assertEqual(jobs, [])
+        fetch.assert_called_once()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_shein_rejects_changed_job_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": "0",
+                "msg": "OK",
+                "info": {
+                    "current": 1,
+                    "size": 2,
+                    "total": 1,
+                    "positions": [],
+                },
+            }
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "岗位分页结构异常"):
+            SheinCampusCollector(self._shein_source()).collect()
+
     @staticmethod
     def _netease_game_source():
         return {

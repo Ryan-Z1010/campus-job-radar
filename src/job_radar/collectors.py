@@ -1942,6 +1942,238 @@ class MokaCampusCollector(Collector):
         return jobs
 
 
+class SheinCampusCollector(Collector):
+    """Collect target-cycle jobs from SHEIN's public careers API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode(raw: bytes) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("SHEIN岗位接口返回了无效 JSON") from exc
+        if (
+            not isinstance(payload, dict)
+            or str(payload.get("code", "")) != "0"
+        ):
+            raise ValueError("SHEIN岗位接口响应异常")
+        return payload
+
+    @staticmethod
+    def _locations(value: Any) -> str:
+        if not isinstance(value, list):
+            raise ValueError("SHEIN岗位地点结构异常")
+        locations = []
+        for city in value:
+            if not isinstance(city, dict):
+                raise ValueError("SHEIN岗位地点元素结构异常")
+            city_id = str(city.get("cityId", "") or "").strip()
+            city_name = str(city.get("cityName", "") or "").strip()
+            if not city_id or not city_name:
+                raise ValueError("SHEIN岗位地点缺少城市 ID 或名称")
+            if city_name not in locations:
+                locations.append(city_name)
+        return "/".join(locations)
+
+    @staticmethod
+    def _education(text: str, fallback: str) -> str:
+        levels = [
+            level
+            for level in ("博士", "硕士", "本科", "大专")
+            if level in text
+        ]
+        return "/".join(levels) or fallback
+
+    def _request_json(self, page: int, page_size: int) -> Dict[str, Any]:
+        return {
+            "current": page,
+            "cityName": "",
+            "countryIds": self.source.get("country_ids", ["CHN"]),
+            "cityIds": self.source.get("city_ids", []),
+            "jobCategoryIds": self.source.get("job_category_ids", []),
+            "jobTypeIds": [
+                self.source.get("campus_job_type_id", "CAMPUS")
+            ],
+            "key": "",
+            "langCode": self.source.get("lang_code", "CN"),
+            "size": page_size,
+        }
+
+    def _positions(self) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 100))
+        max_pages = int(self.source.get("max_pages", 10))
+        if page_size <= 0 or max_pages <= 0:
+            raise ValueError("SHEIN岗位分页配置必须为正整数")
+
+        positions = []
+        seen_ids = set()
+        total = None
+        for page in range(1, max_pages + 1):
+            payload = self._decode(
+                fetch_bytes(
+                    self.source["url"],
+                    method="POST",
+                    json_body=self._request_json(page, page_size),
+                    headers={"Accept": "application/json"},
+                )
+            )
+            info = payload.get("info")
+            if not isinstance(info, dict):
+                raise ValueError("SHEIN岗位接口缺少 info 对象")
+            current = info.get("current")
+            returned_size = info.get("size")
+            current_total = info.get("total")
+            page_items = info.get("records")
+            if (
+                current != page
+                or returned_size != page_size
+                or not isinstance(current_total, int)
+                or current_total < 0
+                or not isinstance(page_items, list)
+                or len(page_items) > page_size
+            ):
+                raise ValueError("SHEIN岗位分页结构异常")
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("SHEIN岗位列表元素结构异常")
+            if total is None:
+                total = current_total
+                expected_pages = (
+                    (total + page_size - 1) // page_size if total else 0
+                )
+                if expected_pages > max_pages:
+                    raise ValueError("SHEIN岗位页数超过配置上限")
+            elif current_total != total:
+                raise ValueError("SHEIN岗位分页总数发生变化")
+
+            for item in page_items:
+                external_id = str(item.get("jobId", "") or "").strip()
+                if not external_id:
+                    raise ValueError("SHEIN岗位缺少稳定 ID")
+                if external_id in seen_ids:
+                    raise ValueError("SHEIN岗位分页返回了重复 ID")
+                seen_ids.add(external_id)
+                positions.append(item)
+
+            if len(positions) >= total:
+                break
+            if not page_items:
+                break
+
+        if total is None or len(positions) != total:
+            raise ValueError("SHEIN岗位没有完整返回全部分页")
+        return positions
+
+    def _to_job(self, item: Dict[str, Any], location: str) -> JobPosting:
+        description = _html_fragment_text(item.get("description", ""))
+        description_parts = [
+            "招聘类型：正式校园招聘",
+            "岗位类别：{}".format(item.get("jobCategoryName", ""))
+            if item.get("jobCategoryName")
+            else "",
+            description,
+        ]
+        external_id = str(item["jobId"]).strip()
+        values = {
+            "external_id": external_id,
+            "title": str(item["jobTitle"]).strip(),
+            "company": self.source.get("company", "SHEIN"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location or self.source.get("location", "待核对"),
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self._education(
+                description,
+                self.source.get("education", ""),
+            ),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": str(
+                item.get("releaseDate", "") or ""
+            ).strip(),
+            "deadline": self.source.get("deadline", ""),
+            "url": str(
+                item.get("jobDetailUrl", "")
+                or self.source.get("homepage", self.source["url"])
+            ).strip(),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        positions = self._positions()
+        country_ids = set(self.source.get("country_ids", ["CHN"]))
+        city_ids = set(self.source.get("city_ids", []))
+        category_ids = set(self.source.get("job_category_ids", []))
+        campus_type = self.source.get("campus_job_type_id", "CAMPUS")
+        target_cycle_keywords = self.source.get(
+            "target_cycle_keywords", []
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        jobs = []
+        for item in positions:
+            external_id = str(item.get("jobId", "") or "").strip()
+            title = str(item.get("jobTitle", "") or "").strip()
+            country_id = str(item.get("countryId", "") or "").strip()
+            category_id = str(
+                item.get("jobCategoryId", "") or ""
+            ).strip()
+            job_type_id = str(item.get("jobTypeId", "") or "").strip()
+            if (
+                not external_id
+                or not title
+                or not country_id
+                or not category_id
+                or not job_type_id
+            ):
+                raise ValueError(
+                    "SHEIN岗位缺少 ID、名称、国家、类别或招聘类型"
+                )
+            if (
+                (country_ids and country_id not in country_ids)
+                or (category_ids and category_id not in category_ids)
+                or job_type_id != campus_type
+            ):
+                raise ValueError("SHEIN岗位接口返回了非目标筛选条件的岗位")
+
+            city_infos = item.get("cityInfos")
+            location = self._locations(city_infos)
+            returned_city_ids = {
+                str(city["cityId"]).strip() for city in city_infos
+            }
+            if city_ids and not returned_city_ids.intersection(city_ids):
+                raise ValueError("SHEIN岗位接口返回了非目标城市岗位")
+
+            description = _html_fragment_text(
+                item.get("description", "")
+            )
+            cycle_text = "{} {}".format(title, description)
+            if target_cycle_keywords and not self._contains(
+                cycle_text, target_cycle_keywords
+            ):
+                continue
+            searchable = "{} {} {}".format(
+                title,
+                item.get("jobCategoryName", ""),
+                description,
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(item, location))
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -3019,6 +3251,7 @@ COLLECTOR_TYPES = {
     "liepin_static_campus": LiepinStaticCampusCollector,
     "moka_campus": MokaCampusCollector,
     "netease_game_campus": NeteaseGameCampusCollector,
+    "shein_campus": SheinCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
