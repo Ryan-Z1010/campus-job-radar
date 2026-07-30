@@ -9,6 +9,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from job_radar.collectors import (
+    AccentureEarlyCareerCollector,
     BeisenLegacyCampusCollector,
     BeisenPortalCampaignCollector,
     CampaignWatchCollector,
@@ -33,6 +34,211 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _accenture_source():
+        return {
+            "id": "accenture_china",
+            "name": "埃森哲中国",
+            "type": "accenture_early_career",
+            "homepage": "https://www.accenture.com/cn-en/careers",
+            "url": (
+                "https://www.accenture.com/api/accenture/"
+                "elastic/findjobs"
+            ),
+            "company": "埃森哲中国",
+            "company_type": "外企",
+            "country_filter": "China/Mainland",
+            "allowed_api_countries": [
+                "China/Mainland",
+                "China/Hong Kong SAR",
+            ],
+            "country_site": "cn-en",
+            "experience_filter": "Early Career",
+            "employee_type": "Full-time",
+            "location_keywords": [
+                "Guangzhou",
+                "Shanghai",
+                "Shenzhen",
+                "Beijing",
+            ],
+            "location_map": {
+                "Guangzhou": "广州",
+                "Shanghai": "上海",
+                "Shenzhen": "深圳",
+                "Beijing": "北京",
+            },
+            "include_keywords": [
+                "AI",
+                "Data",
+                "Technology",
+                "Software",
+                "Business Analyst",
+            ],
+            "exclude_title_keywords": [
+                "Digital Marketing",
+                "Sales",
+            ],
+            "target_cycle_years": [2027],
+            "target_updated_start": "2026-07-01",
+            "target_updated_end": "2027-06-30",
+            "entry_experience_ranges": ["0-2"],
+            "max_results": 50,
+            "graduation_years": [2027],
+        }
+
+    @staticmethod
+    def _accenture_job(**overrides):
+        job = {
+            "guid": "13753726_en",
+            "requisitionId": "13753726",
+            "title": "Business Analyst",
+            "country": "China/Mainland",
+            "location": ["Guangzhou"],
+            "jobTypeDescription": "Early Career",
+            "employeeType": "Full-time",
+            "careerLevel": "Associate",
+            "yearsOfExperience": "0-2",
+            "updateDate": "2026-07-29T10:07:04.663-07:00",
+            "jobDetailUrl": (
+                "https://www.accenture.com/{0}/careers/jobdetails"
+                "?id=13753726_en&title=Business+Analyst"
+            ),
+            "education": ["Bachelor Degree", "Graduate Degree/PhD"],
+            "function": ["Technology Architecture"],
+            "skill": ["Software Engineering"],
+            "areaOfInterest": ["technology"],
+            "jobFamilyGroup": ["Software Engineering"],
+            "jobDescriptionClean": (
+                "Analyze product requirements and work with delivery teams."
+            ),
+            "qualificationClean": (
+                "Use AI tools and understand APIs and data flows."
+            ),
+        }
+        job.update(overrides)
+        return job
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_accenture_filters_cycle_and_maps_target_job(self, fetch):
+        previous_cycle = self._accenture_job(
+            guid="R00317304_en",
+            title=(
+                "2026 Accenture Graduate Program - "
+                "Experience Transformation Analyst"
+            ),
+            location=["Shanghai"],
+            yearsOfExperience="2-5",
+            updateDate="2026-07-20T10:00:00+08:00",
+        )
+        unrelated = self._accenture_job(
+            guid="R00317301_en",
+            title="AAP - Digital Marketing Strategy Analyst",
+            location=["Shanghai"],
+            yearsOfExperience="2-5",
+        )
+        hong_kong = self._accenture_job(
+            guid="R00339239_en",
+            title="Digital Core - Backend Engineer (Java)",
+            country="China/Hong Kong SAR",
+            location=["Hong Kong"],
+        )
+        payload = {
+            "message": "Success",
+            "totalHits": {"total": 4, "overMaxHits": "False"},
+            "data": [
+                self._accenture_job(),
+                previous_cycle,
+                unrelated,
+                hong_kong,
+            ],
+            "aggregations": [],
+        }
+        fetch.return_value = json.dumps(payload).encode("utf-8")
+
+        jobs = AccentureEarlyCareerCollector(
+            self._accenture_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "13753726_en")
+        self.assertEqual(jobs[0].title, "Business Analyst")
+        self.assertEqual(jobs[0].company, "埃森哲中国")
+        self.assertEqual(jobs[0].company_type, "外企")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(jobs[0].published_at, "2026-07-29")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("AI tools", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://www.accenture.com/cn-en/careers/jobdetails"
+                "?id=13753726_en&title=Business+Analyst"
+            ),
+        )
+        call = fetch.call_args
+        self.assertEqual(call.kwargs["method"], "POST")
+        form = call.kwargs["form_body"]
+        self.assertEqual(form["jobCountry"], "China/Mainland")
+        self.assertIn("Early Career", form["jobFilters"])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_accenture_accepts_target_graduate_program(self, fetch):
+        target = self._accenture_job(
+            guid="R2027TECH_en",
+            title="2027 Accenture Graduate Program - Technology Analyst",
+            location=["Shanghai", "Beijing"],
+            yearsOfExperience="2-5",
+            updateDate="2026-08-15T09:30:00+08:00",
+        )
+        payload = {
+            "message": "Success",
+            "totalHits": {"total": 1, "overMaxHits": "False"},
+            "data": [target],
+        }
+        fetch.return_value = json.dumps(payload).encode("utf-8")
+
+        jobs = AccentureEarlyCareerCollector(
+            self._accenture_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "R2027TECH_en")
+        self.assertEqual(jobs[0].location, "上海/北京")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_accenture_empty_result_is_successful(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "message": "Success",
+                "totalHits": {"total": 0, "overMaxHits": "False"},
+                "data": [],
+            }
+        ).encode("utf-8")
+
+        self.assertEqual(
+            AccentureEarlyCareerCollector(
+                self._accenture_source()
+            ).collect(),
+            [],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_accenture_rejects_partial_api_result(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "message": "Success",
+                "totalHits": {"total": 2, "overMaxHits": "False"},
+                "data": [self._accenture_job()],
+            }
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError, "没有完整返回筛选结果"
+        ):
+            AccentureEarlyCareerCollector(
+                self._accenture_source()
+            ).collect()
+
     @staticmethod
     def _hsbc_source():
         return {

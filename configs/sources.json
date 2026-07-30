@@ -1779,6 +1779,93 @@
       "graduation_years": [2027],
       "education": "应届毕业生或近期毕业生，具体学历、专业和海外毕业时间资格以项目为准",
       "note": "已接入汇丰官网Find a programme筛选页及其公开项目接口。采集器动态读取官网ProgramFinder配置和项目总数，固定筛选中国大陆Graduate Programme，只保留广州、上海、深圳、北京或城市待官网确认的AI、数据、工程、技术、网络安全和软件方向；排除客户关系、销售交易、投行及私人银行方向。对有开始日期的项目强制要求2027年开始；对中国项目未公开开始日期的情况，以2026-07-01之后新开放且仍可投递的Graduate Programme识别下一届秋招，并保留官方开放及截止日期供人工核对。2026-07-30实时核验时中国大陆Graduate Programme筛选结果为0，当前正常保持静默。"
+    },
+    {
+      "id": "accenture_china",
+      "name": "埃森哲中国",
+      "type": "accenture_early_career",
+      "enabled": true,
+      "homepage": "https://www.accenture.com/cn-en/careers/life-at-accenture/entry-level",
+      "url": "https://www.accenture.com/api/accenture/elastic/findjobs",
+      "company": "埃森哲中国",
+      "company_type": "外企",
+      "country_filter": "China/Mainland",
+      "allowed_api_countries": [
+        "China/Mainland",
+        "China/Hong Kong SAR"
+      ],
+      "country_site": "cn-en",
+      "language": "en",
+      "experience_filter": "Early Career",
+      "employee_type": "Full-time",
+      "location_keywords": [
+        "Guangzhou",
+        "Shanghai",
+        "Shenzhen",
+        "Beijing"
+      ],
+      "location_map": {
+        "Guangzhou": "广州",
+        "Shanghai": "上海",
+        "Shenzhen": "深圳",
+        "Beijing": "北京"
+      },
+      "include_keywords": [
+        "AI",
+        "Artificial Intelligence",
+        "Machine Learning",
+        "Data",
+        "Software",
+        "Developer",
+        "Development",
+        "Technology",
+        "Technical",
+        "Cloud",
+        "Business Analyst",
+        "Product",
+        "Digital",
+        "Engineering",
+        "Testing",
+        "Programming",
+        "Automation",
+        "Security",
+        "Cyber",
+        "Database",
+        "人工智能",
+        "大模型",
+        "数据",
+        "软件",
+        "开发",
+        "测试",
+        "产品",
+        "需求分析"
+      ],
+      "exclude_title_keywords": [
+        "Digital Marketing",
+        "Sales",
+        "Human Resources",
+        "HR Service",
+        "Finance",
+        "Procure to Pay",
+        "Order to Cash",
+        "Pharmacovigilance",
+        "Creative Practitioner"
+      ],
+      "cycle_markers": [
+        "Graduate Program",
+        "Campus",
+        "AAP"
+      ],
+      "target_cycle_years": [2027],
+      "target_updated_start": "2026-07-01",
+      "target_updated_end": "2027-06-30",
+      "entry_experience_ranges": ["0-2"],
+      "max_results": 50,
+      "min_score": 0.6,
+      "timeout": 40,
+      "graduation_years": [2027],
+      "deadline": "以官方岗位页为准",
+      "note": "已接入埃森哲官网中国站Early Career公开岗位接口。接口的中国站结果同时包含中国大陆和中国香港岗位，采集器完整读取筛选结果并校验总数、稳定ID、国家、招聘阶段和全职类型，再排除香港岗位，只保留广州、上海、深圳、北京的AI、数据、软件、技术、云、产品及需求分析相关岗位；带明确届别的Graduate Program、Campus或AAP岗位必须属于2027目标批次，无明确届别的日常Early Career岗位只接纳0—2年经验且在2026-07-01之后更新的岗位。2026-07-30实时核验时官网中国站共有25个Early Career岗位，其中18个属于中国大陆，当前匹配1个广州Business Analyst岗位；旧的2026 Graduate Program及2—5年普通岗位不会提醒。具体海外毕业资格、粤语要求和申请截止时间仍须查看岗位详情。"
     }
   ]
 }

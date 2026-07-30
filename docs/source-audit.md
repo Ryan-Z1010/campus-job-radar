@@ -35,6 +35,7 @@
 | 唯品会 | `https://app-tc.mokahr.com/campus-recruitment/vipshophr/10039/` | 唯品会招聘官网可验证该 Moka 校招门户；公开岗位接口当前返回 3 个 2027 届实习岗位，尚无正式秋招岗位 | 已启用岗位级监控，强制排除实习，只保留目标城市或地点待核对的 2027 届 AI/数据/软件正式岗位 |
 | SHEIN | `https://careers.shein.cn/Students-%26-Graduates` | 官网公开岗位接口明确区分正式校招、实习和社招；当前中国区正式校园岗位为 0 | 已启用岗位级监控，只保留目标城市的 2027 届 AI/数据/软件正式岗位 |
 | 汇丰中国 | `https://www.hsbc.com/careers/students-and-graduates/find-a-programme?location=mainland-china&programme-type=graduate-programme` | 官网提供中国大陆 Graduate Programme 筛选和公开项目接口；当前筛选结果为 0 | 已启用项目级监控，筛选目标城市或地点待确认的 2027 技术、数据及工程项目 |
+| 埃森哲中国 | `https://www.accenture.com/cn-en/careers/jobsearch` | 官网公开岗位接口可按中国站和 Early Career 筛选；当前共有 25 个岗位，其中 18 个属于中国大陆 | 已启用岗位级监控，排除香港岗位，只保留目标城市的 2027 Graduate Program 或新发布的 0—2 年 AI/数据/技术岗位 |
 
 为什么不直接全部启用：通用 HTML 爬虫对动态站点可能返回 200，但实际得到的只是空页面框架。这样的“成功”最危险，因为它不会报错，却会漏掉岗位。
 
@@ -821,6 +822,39 @@ Programme 的开放地区，Technology Graduate Programme - Engineering
 7—8 月，截止至 2025 年底。新的中国技术项目上线后，采集器会生成项目级
 岗位记录并进入统一去重、评分和邮件提醒流程。具体毕业时间窗口、学历要求和
 工作城市仍以当届项目详情为准。
+
+## 已启用：埃森哲中国 Early Career 技术岗位监控
+
+2026-07-30 核验时，埃森哲中国官网提供独立的 Early Career 页面和动态岗位
+搜索页。搜索页前端直接调用公开的
+`POST /api/accenture/elastic/findjobs` 接口，可固定筛选
+`China/Mainland`、`Early Career` 和 `Full-time`。接口返回稳定岗位 ID、
+更新时间、经验范围、学历、职级、岗位族、职能、技能、完整职责和要求、工作
+城市及官网详情链接，不需要账号、Cookie、验证码、私有令牌或动态签名。
+
+适配器一次读取当前全部 Early Career 筛选结果，并要求接口岗位数与官方总数
+完全一致；岗位 ID 重复、字段缺失，或返回非官网中国站覆盖区域、非 Early
+Career、非全职岗位时会报告来源结构异常。官网中国站结果会同时返回中国大陆
+和中国香港岗位，适配器会先按国家字段排除香港岗位。配置执行以下筛选：
+
+- 只保留广州、上海、深圳、北京的岗位；
+- 匹配 AI、人工智能、机器学习、数据、软件、开发、Technology、Cloud、
+  Business Analyst、产品、需求分析、测试、自动化和网络安全等方向；
+- 排除数字营销、销售、人力、财务、采购到付款、订单到现金、药物警戒和纯
+  创意岗位；
+- 标题带 Graduate Program、Campus 或 AAP 等明确批次标识时，必须属于
+  2027 目标批次；
+- 没有明确届别的日常 Early Career 岗位，只接纳 0—2 年经验、且在
+  2026-07-01 至 2027-06-30 之间更新的岗位。
+
+官网中国站当前共有 25 个 Early Career 岗位，其中 18 个属于中国大陆。现有
+匹配结果为 1 个广州 `Business Analyst`，岗位要求本科及以上，职责涉及需求
+分析、产品设计、功能测试、API 与数据流，并明确提到使用 ChatGPT、Copilot、
+Claude 等 AI 工具；该岗位同时要求英语和粤语作为工作语言，需要投递前人工
+确认。官网仍保留
+`2026 Accenture Graduate Program` 等上一批次岗位，其毕业窗口不覆盖
+2026 年 11 月毕业，因此采集器不会发送提醒。未来 2027 Graduate Program
+上线后会自动进入统一去重、评分和邮件通知流程。
 
 ## 已启用：文远知行 2027 届秋季校园招聘
 
