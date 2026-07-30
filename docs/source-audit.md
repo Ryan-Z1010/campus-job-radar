@@ -34,6 +34,7 @@
 | 网易广州（网易游戏互娱） | `https://campus.game.163.com/` | 官方导航已发布“网易互娱2027届校园招聘”；公开岗位 API 当前完整返回 54 个全职校招岗位 | 已启用岗位级监控，筛选目标城市的 AI/Agent/大模型/算法/数据/软件岗位 |
 | 唯品会 | `https://app-tc.mokahr.com/campus-recruitment/vipshophr/10039/` | 唯品会招聘官网可验证该 Moka 校招门户；公开岗位接口当前返回 3 个 2027 届实习岗位，尚无正式秋招岗位 | 已启用岗位级监控，强制排除实习，只保留目标城市或地点待核对的 2027 届 AI/数据/软件正式岗位 |
 | SHEIN | `https://careers.shein.cn/Students-%26-Graduates` | 官网公开岗位接口明确区分正式校招、实习和社招；当前中国区正式校园岗位为 0 | 已启用岗位级监控，只保留目标城市的 2027 届 AI/数据/软件正式岗位 |
+| 汇丰中国 | `https://www.hsbc.com/careers/students-and-graduates/find-a-programme?location=mainland-china&programme-type=graduate-programme` | 官网提供中国大陆 Graduate Programme 筛选和公开项目接口；当前筛选结果为 0 | 已启用项目级监控，筛选目标城市或地点待确认的 2027 技术、数据及工程项目 |
 
 为什么不直接全部启用：通用 HTML 爬虫对动态站点可能返回 200，但实际得到的只是空页面框架。这样的“成功”最危险，因为它不会报错，却会漏掉岗位。
 
@@ -786,6 +787,40 @@ AI、Agent、大模型、算法、机器学习、数据、软件、开发、测�
 或实习提醒。后续中国区 2027 正式秋招岗位上线后，适配器会保留稳定岗位 ID、
 发布时间、工作城市、学历信息、职责要求和官网详情链接，统一进入去重、评分
 和邮件提醒流程。投递截止时间及海外毕业时间窗口仍以具体岗位为准。
+
+## 已启用：汇丰中国 2027 届技术毕业生项目监控
+
+2026-07-30 核验时，汇丰官网面向大学生和毕业生提供独立的
+“Find a programme”入口，并可按 `Mainland China` 和
+`Graduate Programme` 筛选。官网项目介绍同时确认，中国大陆是 Graduate
+Programme 的开放地区，Technology Graduate Programme - Engineering
+覆盖中国大陆；数据分析、工程、网络安全也是官网单独列出的学生职业方向。
+
+筛选页前端使用公开的 `GET /api/programmes/get-programmes` 接口。接口返回
+每个项目的稳定 ID、地点、业务方向、名称、项目类型、简介、开放日期、截止
+日期、开始日期和官方投递链接，不需要账号、Cookie、验证码、私有令牌或动态
+签名。适配器先从筛选页动态读取 ProgramFinder 设置 ID 和精确项目总数，再
+调用公开接口，并要求解析出的项目数量与官网总数一致；结构变化、ID 重复或
+返回非中国大陆、非 Graduate Programme 项目时会报告来源错误。
+
+配置执行以下筛选：
+
+- 只保留广州、上海、深圳、北京，或官网暂时只写“中国大陆”而城市待确认的
+  项目；
+- 匹配 AI、数据、Data Analytics、Engineering、Technology、Cyber、软件、
+  机器学习、云计算和 Technical Business Analyst 等方向；
+- 排除 Relationship Management、Sales、Trading、Investment Banking、
+  Private Bank 和 Global Payments Solutions 等非目标方向；
+- 对公开开始日期的项目强制要求在 2027 年开始；中国项目未给出开始日期时，
+  只接纳 2026-07-01 之后新开放、且截止日期尚未到达的 Graduate Programme，
+  并在提醒中保留开放和截止日期供人工核对。
+
+官网当前中国大陆 Graduate Programme 筛选结果为 0，因此项目正常保持静默。
+页面仍能看到上一轮中国技术毕业生项目的历史模式：广州曾开放 Engineering
+和 Cyber，西安曾开放 Engineering、Cyber 和 Data，开放时间集中在 2025 年
+7—8 月，截止至 2025 年底。新的中国技术项目上线后，采集器会生成项目级
+岗位记录并进入统一去重、评分和邮件提醒流程。具体毕业时间窗口、学历要求和
+工作城市仍以当届项目详情为准。
 
 ## 已启用：文远知行 2027 届秋季校园招聘
 
