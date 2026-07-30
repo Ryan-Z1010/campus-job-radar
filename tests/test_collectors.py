@@ -19,6 +19,7 @@ from job_radar.collectors import (
     GiihgCampusCollector,
     GzRecruitCompanyCollector,
     HotjobCampusCollector,
+    HsbcProgrammeCollector,
     IguopinCompanyCollector,
     JsonApiCollector,
     LiepinStaticCampusCollector,
@@ -32,6 +33,226 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _hsbc_source():
+        return {
+            "id": "hsbc_china",
+            "name": "汇丰中国",
+            "type": "hsbc_programme",
+            "homepage": (
+                "https://www.hsbc.com/careers/"
+                "students-and-graduates/"
+            ),
+            "url": (
+                "https://www.hsbc.com/careers/students-and-graduates/"
+                "find-a-programme?location=mainland-china&"
+                "programme-type=graduate-programme&page=1&take=50"
+            ),
+            "api_url": (
+                "https://www.hsbc.com/api/programmes/get-programmes"
+            ),
+            "company": "汇丰中国（HSBC）",
+            "company_type": "外企",
+            "location_keywords": [
+                "Guangzhou",
+                "Shanghai",
+                "Shenzhen",
+                "Beijing",
+            ],
+            "location_map": {
+                "Guangzhou": "广州",
+                "Shanghai": "上海",
+                "Shenzhen": "深圳",
+                "Beijing": "北京",
+            },
+            "include_keywords": [
+                "AI",
+                "Data",
+                "Engineering",
+                "Technology",
+                "Cyber",
+            ],
+            "exclude_keywords": [
+                "Relationship Management",
+                "Sales",
+                "Trading",
+            ],
+            "programme_type": "Graduate Programme",
+            "target_opening_start": "2026-07-01",
+            "target_opening_end": "2027-06-30",
+            "target_start_years": [2027],
+            "reference_date": "2026-07-30",
+            "max_programmes": 50,
+            "graduation_years": [2027],
+            "education": "应届毕业生或近期毕业生，具体资格以项目为准",
+        }
+
+    @staticmethod
+    def _hsbc_fragment(
+        external_id,
+        title,
+        location,
+        area,
+        description,
+        opening,
+        closing,
+        start="",
+    ):
+        start_html = (
+            '<div class="program-text__group '
+            'program-text__group--start">'
+            '<dt class="program-text__label">Start Date</dt>'
+            '<dd class="program-text__value">{}</dd></div>'.format(start)
+            if start
+            else ""
+        )
+        return (
+            '<li class="program-item" data-cs-override-id="{external_id}">'
+            "<article>"
+            '<div class="program-location">{location}</div>'
+            '<div class="program-text">'
+            '<div class="program-text__area">{area}</div>'
+            '<a href="https://apply.careers.hsbc.com/{external_id}" '
+            'class="program-text__destination-link">'
+            '<h2 class="program-text__destination">{title}</h2></a>'
+            '<div class="program-text__short-description">'
+            "{description}</div><hr>"
+            '<dl class="program-text__groups">'
+            '<div class="program-text__group program-text__group--type">'
+            '<dt class="program-text__label">Programme type</dt>'
+            '<dd class="program-text__value">Graduate Programme</dd>'
+            "</div>"
+            '<div class="program-text__group '
+            'program-text__group--opening">'
+            '<dt class="program-text__label">Opening Date</dt>'
+            '<dd class="program-text__value">{opening}</dd></div>'
+            '<div class="program-text__group '
+            'program-text__group--closing">'
+            '<dt class="program-text__label">Closing Date</dt>'
+            '<dd class="program-text__value">{closing}</dd></div>'
+            "{start_html}</dl></div>"
+            '<div class="program-text__link"></div>'
+            "</article></li>"
+        ).format(
+            external_id=external_id,
+            title=title,
+            location=location,
+            area=area,
+            description=description,
+            opening=opening,
+            closing=closing,
+            start_html=start_html,
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hsbc_filters_cycle_and_maps_target_programme(self, fetch):
+        finder = (
+            '<div class="table-module" data-component="ProgramFinder" '
+            'data-props-settings="1234567890abcdef1234567890abcdef" '
+            'data-props-total-count="3"></div>'
+        )
+        target = self._hsbc_fragment(
+            "programme-engineering-2027",
+            "Engineering",
+            "Mainland China, Guangzhou",
+            "Technology",
+            "Develop the next generation of digital banking.",
+            "11th Jul 2026",
+            "31st Oct 2026",
+            "Mon Jul 19, 2027",
+        )
+        previous_cycle = self._hsbc_fragment(
+            "programme-data-2026",
+            "Data",
+            "Mainland China, Guangzhou",
+            "Technology",
+            "Turn data into insight.",
+            "11th Jul 2025",
+            "31st Dec 2025",
+        )
+        unrelated = self._hsbc_fragment(
+            "programme-relationship-2027",
+            "Relationship Management",
+            "Mainland China",
+            "International Wealth and Premier Banking",
+            "Build client relationships.",
+            "10th Sep 2026",
+            "30th Nov 2026",
+            "Mon Jul 19, 2027",
+        )
+        fetch.side_effect = [
+            finder.encode("utf-8"),
+            json.dumps(
+                [target, previous_cycle, unrelated],
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        jobs = HsbcProgrammeCollector(self._hsbc_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(
+            jobs[0].external_id, "programme-engineering-2027"
+        )
+        self.assertEqual(jobs[0].company, "汇丰中国（HSBC）")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(jobs[0].published_at, "2026-07-11")
+        self.assertEqual(jobs[0].deadline, "2026-10-31")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://apply.careers.hsbc.com/"
+                "programme-engineering-2027"
+            ),
+        )
+        self.assertIn("预计开始时间：2027-07-19", jobs[0].description)
+        self.assertEqual(fetch.call_count, 2)
+        api_url = fetch.call_args_list[1].args[0]
+        self.assertIn("skip=0", api_url)
+        self.assertIn("take=4", api_url)
+        self.assertIn("location=mainland-china", api_url)
+        self.assertIn("programme-type=graduate-programme", api_url)
+        self.assertIn(
+            "s=1234567890abcdef1234567890abcdef", api_url
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hsbc_empty_result_is_successful(self, fetch):
+        finder = (
+            '<div data-component="ProgramFinder" '
+            'data-props-settings="1234567890abcdef1234567890abcdef" '
+            'data-props-total-count="0"></div>'
+        )
+        empty_card = (
+            '<li class="content-card"><h2>'
+            "Can’t find what you’re looking for?</h2></li>"
+        )
+        fetch.side_effect = [
+            finder.encode("utf-8"),
+            json.dumps([empty_card]).encode("utf-8"),
+        ]
+
+        jobs = HsbcProgrammeCollector(self._hsbc_source()).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_hsbc_rejects_incomplete_api_result(self, fetch):
+        finder = (
+            '<div data-component="ProgramFinder" '
+            'data-props-settings="1234567890abcdef1234567890abcdef" '
+            'data-props-total-count="1"></div>'
+        )
+        fetch.side_effect = [
+            finder.encode("utf-8"),
+            json.dumps([]).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "没有完整返回"):
+            HsbcProgrammeCollector(self._hsbc_source()).collect()
+
     @staticmethod
     def _shein_source():
         return {

@@ -1721,6 +1721,64 @@
       "education": "具体学历、专业和海外毕业时间要求以岗位任职要求为准",
       "deadline": "以官方公告及岗位为准",
       "note": "已接入SHEIN招聘官网公开岗位接口。请求固定为中国区、广州/上海/深圳/北京、信息技术类和CAMPUS正式校园招聘，并再次校验每条返回记录；只保留明确标识2027届且匹配AI、Agent、大模型、算法、数据、软件、开发或测试方向的岗位，排除PRACTICE实习、SOCIAL社招及非目标职能。2026-07-30实时核验时官网全球仅有2个美国CAMPUS岗位，中国区CAMPUS岗位为0，因此当前正常返回0条。"
+    },
+    {
+      "id": "hsbc_china",
+      "name": "汇丰中国",
+      "type": "hsbc_programme",
+      "enabled": true,
+      "homepage": "https://www.hsbc.com/careers/students-and-graduates/university-students-and-graduates",
+      "url": "https://www.hsbc.com/careers/students-and-graduates/find-a-programme?location=mainland-china&programme-type=graduate-programme&page=1&take=50",
+      "api_url": "https://www.hsbc.com/api/programmes/get-programmes",
+      "company": "汇丰中国（HSBC）",
+      "company_type": "外企",
+      "location": "中国大陆（城市待官网详情确认）",
+      "location_filter": "mainland-china",
+      "programme_type_filter": "graduate-programme",
+      "programme_type": "Graduate Programme",
+      "location_keywords": [
+        "Guangzhou",
+        "Shanghai",
+        "Shenzhen",
+        "Beijing"
+      ],
+      "location_map": {
+        "Guangzhou": "广州",
+        "Shanghai": "上海",
+        "Shenzhen": "深圳",
+        "Beijing": "北京"
+      },
+      "allow_generic_mainland": true,
+      "include_keywords": [
+        "AI",
+        "Artificial Intelligence",
+        "Data",
+        "Data Analytics",
+        "Engineering",
+        "Technology",
+        "Cyber",
+        "Software",
+        "Developer",
+        "Digital",
+        "Machine Learning",
+        "Cloud",
+        "Technical Business Analyst"
+      ],
+      "exclude_keywords": [
+        "Relationship Management",
+        "Sales",
+        "Trading",
+        "Investment Banking",
+        "Private Bank",
+        "Global Payments Solutions"
+      ],
+      "target_opening_start": "2026-07-01",
+      "target_opening_end": "2027-06-30",
+      "target_start_years": [2027],
+      "max_programmes": 50,
+      "graduation_years": [2027],
+      "education": "应届毕业生或近期毕业生，具体学历、专业和海外毕业时间资格以项目为准",
+      "note": "已接入汇丰官网Find a programme筛选页及其公开项目接口。采集器动态读取官网ProgramFinder配置和项目总数，固定筛选中国大陆Graduate Programme，只保留广州、上海、深圳、北京或城市待官网确认的AI、数据、工程、技术、网络安全和软件方向；排除客户关系、销售交易、投行及私人银行方向。对有开始日期的项目强制要求2027年开始；对中国项目未公开开始日期的情况，以2026-07-01之后新开放且仍可投递的Graduate Programme识别下一届秋招，并保留官方开放及截止日期供人工核对。2026-07-30实时核验时中国大陆Graduate Programme筛选结果为0，当前正常保持静默。"
     }
   ]
 }

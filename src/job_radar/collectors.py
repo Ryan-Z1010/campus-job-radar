@@ -2174,6 +2174,414 @@ class SheinCampusCollector(Collector):
         return jobs
 
 
+class _HsbcFinderStateParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.states: List[Dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag != "div":
+            return
+        values = dict(attrs)
+        if values.get("data-component") == "ProgramFinder":
+            self.states.append(values)
+
+
+class _HsbcProgrammeParser(HTMLParser):
+    VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+    FIELD_CLASSES = {
+        "program-location": "location",
+        "program-text__area": "area",
+        "program-text__destination": "title",
+        "program-text__short-description": "description",
+        "program-text__group--type": "programme_type",
+        "program-text__group--opening": "opening_date",
+        "program-text__group--closing": "closing_date",
+        "program-text__group--start": "start_date",
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.programmes: List[Dict[str, str]] = []
+        self.current: Dict[str, str] | None = None
+        self.field = ""
+        self.group_field = ""
+        self.capture_group_value = False
+        self.ignore_text_depth = 0
+        self.depth = 0
+
+    @staticmethod
+    def _classes(attrs) -> set:
+        return set(dict(attrs).get("class", "").split())
+
+    def handle_starttag(self, tag: str, attrs):
+        values = dict(attrs)
+        classes = self._classes(attrs)
+        if (
+            tag == "li"
+            and "program-item" in classes
+            and self.current is None
+        ):
+            self.current = {
+                "external_id": values.get("data-cs-override-id", "")
+            }
+            self.depth = 1
+            return
+        if self.current is None:
+            return
+
+        if tag not in self.VOID_TAGS:
+            self.depth += 1
+        if self.ignore_text_depth:
+            if tag not in self.VOID_TAGS:
+                self.ignore_text_depth += 1
+            return
+        if "sr-only" in classes:
+            self.ignore_text_depth = 1
+            return
+        if (
+            tag == "a"
+            and "program-text__destination-link" in classes
+        ):
+            self.current["url"] = values.get("href", "")
+        if tag == "dd" and "program-text__value" in classes:
+            self.capture_group_value = bool(self.group_field)
+        for class_name, field in self.FIELD_CLASSES.items():
+            if class_name not in classes:
+                continue
+            if field in {
+                "programme_type",
+                "opening_date",
+                "closing_date",
+                "start_date",
+            }:
+                self.group_field = field
+            else:
+                self.field = field
+
+    def handle_data(self, data: str):
+        if self.current is None or self.ignore_text_depth:
+            return
+        text = " ".join(data.split())
+        if not text:
+            return
+        target = self.group_field if self.capture_group_value else self.field
+        if target:
+            existing = self.current.get(target, "")
+            self.current[target] = "{} {}".format(existing, text).strip()
+
+    def handle_endtag(self, tag: str):
+        if self.current is None:
+            return
+        if self.ignore_text_depth:
+            self.ignore_text_depth -= 1
+            self.depth -= 1
+            return
+        if tag == "dd":
+            self.capture_group_value = False
+        elif tag in {"h2", "div"}:
+            self.field = ""
+        self.depth -= 1
+        if tag == "li" and self.depth == 0:
+            self.programmes.append(self.current)
+            self.current = None
+            self.field = ""
+            self.group_field = ""
+            self.capture_group_value = False
+            self.ignore_text_depth = 0
+
+
+class HsbcProgrammeCollector(Collector):
+    """Collect target-cycle graduate programmes from HSBC's public API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any, label: str) -> datetime | None:
+        text = " ".join(str(value or "").split())
+        if not text:
+            return None
+        normalized = re.sub(
+            r"(?i)(\d{1,2})(st|nd|rd|th)", r"\1", text
+        )
+        formats = (
+            "%d %b %Y",
+            "%a %b %d, %Y",
+            "%b %Y",
+            "%B %Y",
+        )
+        for date_format in formats:
+            try:
+                return datetime.strptime(normalized, date_format)
+            except ValueError:
+                continue
+        raise ValueError("汇丰项目{}格式异常".format(label))
+
+    def _finder_state(self) -> Dict[str, Any]:
+        raw = fetch_bytes(self.source["url"])
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("汇丰项目筛选页返回了无效 UTF-8") from exc
+        parser = _HsbcFinderStateParser()
+        parser.feed(body)
+        if len(parser.states) != 1:
+            raise ValueError("汇丰项目筛选页缺少唯一 ProgramFinder")
+        state = parser.states[0]
+        settings_id = state.get("data-props-settings", "")
+        total_text = state.get("data-props-total-count", "")
+        if not re.fullmatch(r"[a-f0-9]{32}", settings_id):
+            raise ValueError("汇丰项目筛选页 settings ID 结构异常")
+        try:
+            total = int(total_text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("汇丰项目筛选页缺少项目总数") from exc
+        if total < 0:
+            raise ValueError("汇丰项目筛选页项目总数异常")
+        return {"settings_id": settings_id, "total": total}
+
+    def _validate_filters(self) -> Dict[str, str]:
+        query = parse_qs(urlsplit(self.source["url"]).query)
+        required = {
+            "location": self.source.get(
+                "location_filter", "mainland-china"
+            ),
+            "programme-type": self.source.get(
+                "programme_type_filter", "graduate-programme"
+            ),
+        }
+        for key, expected in required.items():
+            if query.get(key) != [expected]:
+                raise ValueError("汇丰项目筛选页缺少目标{}参数".format(key))
+        return required
+
+    def _programmes(
+        self, state: Dict[str, Any], filters: Dict[str, str]
+    ) -> List[Dict[str, str]]:
+        max_programmes = int(self.source.get("max_programmes", 50))
+        if max_programmes <= 0:
+            raise ValueError("汇丰项目数量上限必须为正整数")
+        if state["total"] > max_programmes:
+            raise ValueError("汇丰项目数量超过配置上限")
+        request_query = {
+            "skip": 0,
+            "take": max(state["total"] + 1, 1),
+            "count": 0,
+            "s": state["settings_id"],
+            **filters,
+        }
+        separator = "&" if "?" in self.source["api_url"] else "?"
+        raw = fetch_bytes(
+            "{}{}{}".format(
+                self.source["api_url"],
+                separator,
+                urlencode(request_query),
+            ),
+            headers={"Accept": "application/json"},
+        )
+        try:
+            fragments = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("汇丰项目接口返回了无效 JSON") from exc
+        if not isinstance(fragments, list) or any(
+            not isinstance(fragment, str) for fragment in fragments
+        ):
+            raise ValueError("汇丰项目接口响应结构异常")
+
+        parser = _HsbcProgrammeParser()
+        for fragment in fragments:
+            parser.feed(fragment)
+        programmes = parser.programmes
+        if len(programmes) != state["total"]:
+            raise ValueError("汇丰项目接口没有完整返回筛选结果")
+        ids = [item.get("external_id", "") for item in programmes]
+        if any(not external_id for external_id in ids):
+            raise ValueError("汇丰项目缺少稳定 ID")
+        if len(ids) != len(set(ids)):
+            raise ValueError("汇丰项目接口返回了重复 ID")
+        return programmes
+
+    def _location(self, value: str) -> str:
+        locations = []
+        for keyword, translated in self.source.get(
+            "location_map", {}
+        ).items():
+            if keyword.lower() in value.lower() and translated not in locations:
+                locations.append(translated)
+        if locations:
+            return "/".join(locations)
+        if self.source.get("allow_generic_mainland", True) and (
+            "mainland china" in value.lower()
+        ):
+            return self.source.get(
+                "location", "中国大陆（城市待官网详情确认）"
+            )
+        return value
+
+    def _is_target_cycle(
+        self,
+        opening: datetime,
+        closing: datetime,
+        start: datetime | None,
+    ) -> bool:
+        target_start_years = set(
+            int(year) for year in self.source.get("target_start_years", [])
+        )
+        if start is not None and (
+            target_start_years and start.year not in target_start_years
+        ):
+            return False
+        opening_start = datetime.strptime(
+            self.source["target_opening_start"], "%Y-%m-%d"
+        )
+        opening_end = datetime.strptime(
+            self.source["target_opening_end"], "%Y-%m-%d"
+        )
+        if not opening_start <= opening <= opening_end:
+            return False
+        reference_date = self.source.get("reference_date")
+        today = (
+            datetime.strptime(reference_date, "%Y-%m-%d")
+            if reference_date
+            else datetime.now()
+        )
+        return closing.date() >= today.date()
+
+    def _to_job(
+        self,
+        item: Dict[str, str],
+        location: str,
+        opening: datetime,
+        closing: datetime,
+        start: datetime | None,
+    ) -> JobPosting:
+        description_parts = [
+            "项目类型：{}".format(item["programme_type"]),
+            "业务方向：{}".format(item["area"]) if item.get("area") else "",
+            item.get("description", ""),
+            "预计开始时间：{}".format(start.strftime("%Y-%m-%d"))
+            if start
+            else "",
+        ]
+        values = {
+            "external_id": item["external_id"],
+            "title": item["title"],
+            "company": self.source.get("company", "汇丰中国（HSBC）"),
+            "company_type": self.source.get("company_type", "外企"),
+            "location": location,
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": opening.strftime("%Y-%m-%d"),
+            "deadline": closing.strftime("%Y-%m-%d"),
+            "url": urljoin(self.source["homepage"], item["url"]),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        filters = self._validate_filters()
+        state = self._finder_state()
+        programmes = self._programmes(state, filters)
+        programme_type = self.source.get(
+            "programme_type", "Graduate Programme"
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        target_locations = self.source.get("location_keywords", [])
+        jobs = []
+        for item in programmes:
+            required = (
+                "external_id",
+                "title",
+                "location",
+                "programme_type",
+                "opening_date",
+                "closing_date",
+                "url",
+            )
+            if any(
+                not str(item.get(field, "") or "").strip()
+                for field in required
+            ):
+                raise ValueError("汇丰项目缺少 ID、名称、地点、类型、日期或链接")
+            if item["programme_type"] != programme_type:
+                raise ValueError("汇丰项目接口返回了非毕业生项目")
+            if "mainland china" not in item["location"].lower():
+                raise ValueError("汇丰项目接口返回了非中国大陆项目")
+
+            generic_mainland = item["location"].strip().lower() in {
+                "mainland china",
+                "mainland china cities - hsbc bank china",
+                "mainland china cities - hsbc qianhai",
+            }
+            if (
+                target_locations
+                and not self._contains(
+                    item["location"], target_locations
+                )
+                and not (
+                    generic_mainland
+                    and self.source.get("allow_generic_mainland", True)
+                )
+            ):
+                continue
+            searchable = " ".join(
+                [
+                    item["title"],
+                    item.get("area", ""),
+                    item.get("description", ""),
+                ]
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+
+            opening = self._date(item["opening_date"], "开放日期")
+            closing = self._date(item["closing_date"], "截止日期")
+            start = self._date(item.get("start_date"), "开始日期")
+            if opening is None or closing is None:
+                raise ValueError("汇丰项目缺少开放日期或截止日期")
+            if not self._is_target_cycle(opening, closing, start):
+                continue
+            jobs.append(
+                self._to_job(
+                    item,
+                    self._location(item["location"]),
+                    opening,
+                    closing,
+                    start,
+                )
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -3245,6 +3653,7 @@ COLLECTOR_TYPES = {
     "gdrc_group": GdrcGroupCollector,
     "giihg_campus": GiihgCampusCollector,
     "gzrecruit_company": GzRecruitCompanyCollector,
+    "hsbc_programme": HsbcProgrammeCollector,
     "hotjob_campus": HotjobCampusCollector,
     "iguopin_company": IguopinCompanyCollector,
     "json_api": JsonApiCollector,
