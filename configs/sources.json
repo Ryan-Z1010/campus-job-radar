@@ -1866,6 +1866,34 @@
       "graduation_years": [2027],
       "deadline": "以官方岗位页为准",
       "note": "已接入埃森哲官网中国站Early Career公开岗位接口。接口的中国站结果同时包含中国大陆和中国香港岗位，采集器完整读取筛选结果并校验总数、稳定ID、国家、招聘阶段和全职类型，再排除香港岗位，只保留广州、上海、深圳、北京的AI、数据、软件、技术、云、产品及需求分析相关岗位；带明确届别的Graduate Program、Campus或AAP岗位必须属于2027目标批次，无明确届别的日常Early Career岗位只接纳0—2年经验且在2026-07-01之后更新的岗位。2026-07-30实时核验时官网中国站共有25个Early Career岗位，其中18个属于中国大陆，当前匹配1个广州Business Analyst岗位；旧的2026 Graduate Program及2—5年普通岗位不会提醒。具体海外毕业资格、粤语要求和申请截止时间仍须查看岗位详情。"
+    },
+    {
+      "id": "pwc_china",
+      "name": "普华永道中国",
+      "type": "pwc_graduate_campaign",
+      "enabled": true,
+      "homepage": "https://www.pwccn.com/zh/careers/students.html?navId=7",
+      "section_id": "graduate",
+      "required_text": "毕业生计划",
+      "target_keywords": [
+        "2027届",
+        "2027 届",
+        "2027年毕业",
+        "2027 年毕业"
+      ],
+      "application_link_keywords": ["立即申请"],
+      "allowed_application_hosts": ["app.mokahr.com"],
+      "application_path_prefix": "/campus-recruitment/pwc/148260",
+      "external_id": "pwc-china-graduate-2027-launch",
+      "title": "普华永道中国2027毕业生计划已启动（请核对AI/数据岗位）",
+      "company": "普华永道中国",
+      "company_type": "外企",
+      "location": "广州/上海/深圳/北京（具体岗位待官网确认）",
+      "description": "普华永道中国官网毕业生计划已明确开放2027届申请；请进入官方申请入口优先核对人工智能、数据分析、数据科学、数字化、技术咨询、网络安全、软件及计算机相关岗位，并逐岗确认海外毕业时间资格。",
+      "education": "全日制本科及以上，专业及海外毕业时间要求以当届毕业生计划和具体岗位为准",
+      "graduation_years": [2027],
+      "deadline": "以官方毕业生计划及具体岗位为准",
+      "note": "已接入普华永道中国官网校园招聘页的毕业生计划区块监控。采集器只读取section#graduate并验证官网给出的Moka申请入口，避免同页2027届实习计划造成误报。2026-07-30核验时毕业生计划仍面向2024、2025、2026届，因此当前正常返回0条；未来该区块明确出现2027届或2027年毕业标识后生成一次启动提醒。官方Moka岗位站对普通脚本持续循环重定向，当前不模拟会话、不复制加密接口或Cookie；启动提醒后需进入官网逐岗核对广州、上海、深圳、北京的AI、数据及技术岗位。"
     }
   ]
 }

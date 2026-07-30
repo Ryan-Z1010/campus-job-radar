@@ -27,6 +27,7 @@ from job_radar.collectors import (
     MokaCampusCollector,
     NeteaseGameCampusCollector,
     NoticeJsonCollector,
+    PwcGraduateCampaignCollector,
     SheinCampusCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
@@ -34,6 +35,102 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _pwc_source():
+        return {
+            "id": "pwc_china",
+            "name": "普华永道中国",
+            "type": "pwc_graduate_campaign",
+            "homepage": "https://www.pwccn.com/zh/careers/students.html",
+            "section_id": "graduate",
+            "required_text": "毕业生计划",
+            "target_keywords": ["2027届", "2027 届"],
+            "application_link_keywords": ["立即申请"],
+            "allowed_application_hosts": ["app.mokahr.com"],
+            "application_path_prefix": "/campus-recruitment/pwc/148260",
+            "external_id": "pwc-china-graduate-2027-launch",
+            "title": "普华永道中国2027毕业生计划已启动",
+            "company": "普华永道中国",
+            "company_type": "外企",
+            "location": "广州/上海/深圳/北京（具体岗位待官网确认）",
+            "description": "请进入官网核对AI、数据与技术岗位。",
+            "education": "全日制本科及以上，具体要求以当届公告为准",
+            "graduation_years": [2027],
+            "deadline": "以官方项目及岗位为准",
+        }
+
+    @staticmethod
+    def _pwc_page(graduate_years: str) -> bytes:
+        return (
+            '<section id="graduate">'
+            "<h3>毕业生计划</h3>"
+            "<p>欢迎{}届全日制本科及以上学历毕业生报名。</p>"
+            '<a href="https://app.mokahr.com/campus-recruitment/'
+            'pwc/148260?locale=zh-CN#/jobs?page=1">立即申请</a>'
+            "</section>"
+            '<section id="internship">'
+            "<h3>实习计划</h3><p>欢迎2027届或之后毕业的同学报名。</p>"
+            "</section>"
+        ).format(graduate_years).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pwc_ignores_target_year_outside_graduate_section(self, fetch):
+        fetch.return_value = self._pwc_page("2024、2025、2026")
+
+        jobs = PwcGraduateCampaignCollector(
+            self._pwc_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pwc_maps_target_graduate_campaign(self, fetch):
+        fetch.return_value = self._pwc_page("2025、2026、2027")
+
+        jobs = PwcGraduateCampaignCollector(
+            self._pwc_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(
+            jobs[0].external_id, "pwc-china-graduate-2027-launch"
+        )
+        self.assertEqual(jobs[0].company, "普华永道中国")
+        self.assertEqual(jobs[0].company_type, "外企")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://app.mokahr.com/campus-recruitment/"
+                "pwc/148260?locale=zh-CN#/jobs?page=1"
+            ),
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pwc_rejects_missing_graduate_section(self, fetch):
+        fetch.return_value = (
+            "<section id='internship'>2027届实习计划</section>"
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少毕业生计划区块"):
+            PwcGraduateCampaignCollector(
+                self._pwc_source()
+            ).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pwc_rejects_unexpected_application_link(self, fetch):
+        fetch.return_value = (
+            '<section id="graduate"><h3>毕业生计划</h3>'
+            "<p>欢迎2027届毕业生报名。</p>"
+            '<a href="https://example.com/apply">立即申请</a>'
+            "</section>"
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少有效官方申请入口"):
+            PwcGraduateCampaignCollector(
+                self._pwc_source()
+            ).collect()
+
     @staticmethod
     def _accenture_source():
         return {
