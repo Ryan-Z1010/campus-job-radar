@@ -2958,10 +2958,15 @@ class HotjobCampusCollector(Collector):
 
                 published_at = str(item.get("publishFirstDate") or "")
                 project_name = str(item.get("projectName") or "")
-                company = str(
-                    item.get("company")
-                    or self.source.get("company", self.source["name"])
-                )
+                if self.source.get("prefer_source_company"):
+                    company = str(
+                        self.source.get("company", self.source["name"])
+                    )
+                else:
+                    company = str(
+                        item.get("company")
+                        or self.source.get("company", self.source["name"])
+                    )
                 location = str(
                     item.get("workPlaceStr")
                     or self.source.get("location", "待核对")
@@ -2998,11 +3003,24 @@ class HotjobCampusCollector(Collector):
                 deadline = str(item.get("endDate") or "")
                 if deadline.startswith("3000-"):
                     deadline = "长期招聘"
-                description_parts = [
-                    str(item.get("postTypeName") or ""),
-                    project_name,
-                    str(item.get("department") or ""),
-                ]
+                description_parts = []
+                if not self.source.get("omit_post_type_name"):
+                    description_parts.append(
+                        str(item.get("postTypeName") or "")
+                    )
+                description_parts.extend(
+                    [
+                        project_name,
+                        str(item.get("department") or ""),
+                    ]
+                )
+                description_parts = list(
+                    dict.fromkeys(
+                        part
+                        for part in description_parts
+                        if part and part != title
+                    )
+                )
                 values = {
                     "external_id": post_id,
                     "title": title,
@@ -3011,9 +3029,8 @@ class HotjobCampusCollector(Collector):
                         "company_type", "未知"
                     ),
                     "location": location,
-                    "description": "｜".join(
-                        part for part in description_parts if part
-                    ),
+                    "description": "｜".join(description_parts)
+                    or self.source.get("description", ""),
                     "education": str(item.get("educationStr") or ""),
                     "graduation_years": self.source.get(
                         "graduation_years", []

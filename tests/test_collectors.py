@@ -1706,6 +1706,59 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(HotjobCampusCollector(self._hotjob_source()).collect(), [])
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_hotjob_campus_accepts_fresh_ey_ai_graduate_job(self, fetch):
+        source = {
+            **self._hotjob_source(),
+            "id": "ey_china",
+            "name": "安永中国",
+            "company": "安永中国",
+            "company_type": "外企",
+            "prefer_source_company": True,
+            "omit_post_type_name": True,
+            "description": "安永中国大陆 AI 创新中心应届生岗位",
+            "target_keywords": ["2027届", "应届生招聘", "毕业生招聘"],
+            "include_keywords": ["AI", "人工智能", "数据", "技术"],
+            "exclude_keywords": ["实习", "2025-2026"],
+            "graduation_years": [],
+        }
+        fetch.return_value = self._hotjob_page(
+            [
+                {
+                    "postId": "ey-ai-graduate",
+                    "postName": "安永中国AI创新中心应届生招聘",
+                    "projectName": "安永中国AI创新中心应届生招聘",
+                    "postTypeName": "应届生招聘",
+                    "company": "安永校园招聘",
+                    "workPlaceStr": "上海市",
+                    "educationStr": "本科及以上",
+                    "publishFirstDate": "2026-07-13 00:00:00",
+                    "endDate": "2026-11-21 23:59:59",
+                },
+                {
+                    "postId": "ey-spring-2026",
+                    "postName": "2025-2026年安永春季应届毕业生校园招聘项目",
+                    "projectName": "2025-2026年安永春季应届毕业生校园招聘项目",
+                    "company": "安永校园招聘",
+                    "workPlaceStr": "全部地区",
+                    "publishFirstDate": "2026-04-10 00:00:00",
+                },
+            ]
+        )
+
+        jobs = HotjobCampusCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "ey-ai-graduate")
+        self.assertEqual(jobs[0].company, "安永中国")
+        self.assertEqual(jobs[0].location, "上海市")
+        self.assertEqual(
+            jobs[0].description,
+            "安永中国大陆 AI 创新中心应届生岗位",
+        )
+        self.assertEqual(jobs[0].graduation_years, [])
+        self.assertEqual(jobs[0].deadline, "2026-11-21 23:59:59")
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_hotjob_campus_rejects_changed_schema(self, fetch):
         fetch.return_value = json.dumps(
             {"state": "200", "data": {"pageForm": {}}}
