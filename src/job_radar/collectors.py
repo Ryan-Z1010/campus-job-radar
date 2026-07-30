@@ -2582,6 +2582,301 @@ class HsbcProgrammeCollector(Collector):
         return jobs
 
 
+class AccentureEarlyCareerCollector(Collector):
+    """Collect target early-career jobs from Accenture's public search API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _text_list(value: Any, label: str) -> List[str]:
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            raise ValueError("埃森哲岗位{}结构异常".format(label))
+        return [item.strip() for item in value]
+
+    @staticmethod
+    def _updated_at(value: Any) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("埃森哲岗位缺少更新时间")
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("埃森哲岗位更新时间格式异常") from exc
+
+    def _positions(self) -> List[Dict[str, Any]]:
+        max_results = int(self.source.get("max_results", 50))
+        if max_results <= 0:
+            raise ValueError("埃森哲岗位数量上限必须为正整数")
+        experience = self.source.get(
+            "experience_filter", "Early Career"
+        )
+        job_filters = [
+            {
+                "fieldName": "jobTypeDescription.keyword",
+                "items": [experience],
+                "multiSelect": False,
+            }
+        ]
+        form = {
+            "startIndex": 0,
+            "maxResultSize": max_results,
+            "jobKeyword": "",
+            "jobCountry": self.source.get(
+                "country_filter", "China/Mainland"
+            ),
+            "jobLanguage": self.source.get("language", "en"),
+            "countrySite": self.source.get("country_site", "cn-en"),
+            "sortBy": 2,
+            "searchType": "vectorSearch",
+            "enableQueryBoost": "true",
+            "minScore": self.source.get("min_score", 0.6),
+            "getFeedbackJudgmentEnabled": "true",
+            "useCleanEmbedding": "true",
+            "score": "true",
+            "totalHits": "true",
+            "debugQuery": "false",
+            "jobFilters": json.dumps(
+                job_filters, ensure_ascii=False, separators=(",", ":")
+            ),
+        }
+        raw = fetch_bytes(
+            self.source["url"],
+            timeout=int(self.source.get("timeout", 40)),
+            method="POST",
+            form_body=form,
+            headers={"Accept": "application/json"},
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("埃森哲岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("message") != "Success":
+            raise ValueError("埃森哲岗位接口响应状态异常")
+        positions = payload.get("data")
+        total_hits = payload.get("totalHits")
+        if (
+            not isinstance(positions, list)
+            or not isinstance(total_hits, dict)
+            or not isinstance(total_hits.get("total"), int)
+        ):
+            raise ValueError("埃森哲岗位接口响应结构异常")
+        total = total_hits["total"]
+        if total < 0 or total > max_results:
+            raise ValueError("埃森哲岗位数量超过配置上限")
+        if len(positions) != total:
+            raise ValueError("埃森哲岗位接口没有完整返回筛选结果")
+        if any(not isinstance(item, dict) for item in positions):
+            raise ValueError("埃森哲岗位列表元素结构异常")
+
+        ids = [str(item.get("guid", "") or "").strip() for item in positions]
+        if any(not external_id for external_id in ids):
+            raise ValueError("埃森哲岗位缺少稳定 ID")
+        if len(ids) != len(set(ids)):
+            raise ValueError("埃森哲岗位接口返回了重复 ID")
+        return positions
+
+    def _location(self, values: List[str]) -> str:
+        mapping = self.source.get("location_map", {})
+        locations = []
+        for value in values:
+            translated = mapping.get(value, value)
+            if translated not in locations:
+                locations.append(str(translated))
+        return "/".join(locations)
+
+    def _explicit_cycle(self, title: str) -> bool | None:
+        lowered = title.lower()
+        markers = self.source.get(
+            "cycle_markers", ["graduate program", "campus", "AAP"]
+        )
+        if not self._contains(lowered, markers):
+            return None
+        years = {
+            int(year) for year in re.findall(r"(?<!\d)(20\d{2})(?!\d)", title)
+        }
+        years.update(
+            2000 + int(year)
+            for year in re.findall(r"(?i)\bFY\s*(\d{2})\b", title)
+        )
+        if not years:
+            return None
+        target_years = {
+            int(year) for year in self.source.get("target_cycle_years", [])
+        }
+        return bool(years.intersection(target_years))
+
+    def _is_target_cycle(
+        self,
+        item: Dict[str, Any],
+        title: str,
+        updated_at: datetime,
+    ) -> bool:
+        start = datetime.strptime(
+            self.source["target_updated_start"], "%Y-%m-%d"
+        ).date()
+        end = datetime.strptime(
+            self.source["target_updated_end"], "%Y-%m-%d"
+        ).date()
+        if not start <= updated_at.date() <= end:
+            return False
+        explicit_cycle = self._explicit_cycle(title)
+        if explicit_cycle is not None:
+            return explicit_cycle
+        return str(item.get("yearsOfExperience", "") or "").strip() in set(
+            self.source.get("entry_experience_ranges", ["0-2"])
+        )
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        title: str,
+        locations: List[str],
+        updated_at: datetime,
+    ) -> JobPosting:
+        education = self._text_list(item.get("education") or [], "学历")
+        functions = self._text_list(item.get("function") or [], "职能")
+        skills = self._text_list(item.get("skill") or [], "技能")
+        areas = self._text_list(item.get("areaOfInterest") or [], "方向")
+        description_parts = [
+            "招聘阶段：{}".format(item["jobTypeDescription"]),
+            "职级：{}".format(item.get("careerLevel", ""))
+            if item.get("careerLevel")
+            else "",
+            "经验范围：{}".format(item.get("yearsOfExperience", ""))
+            if item.get("yearsOfExperience")
+            else "",
+            "方向：{}".format("/".join(areas)) if areas else "",
+            "职能：{}".format("/".join(functions)) if functions else "",
+            "技能：{}".format("/".join(skills)) if skills else "",
+            str(item.get("jobDescriptionClean", "") or "").strip(),
+            str(item.get("qualificationClean", "") or "").strip(),
+        ]
+        detail_url = str(item["jobDetailUrl"]).replace(
+            "{0}", self.source.get("country_site", "cn-en")
+        )
+        parsed_url = urlsplit(detail_url)
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.netloc not in {
+                "www.accenture.com",
+                "www.accenture.cn",
+            }
+            or "/careers/jobdetails" not in parsed_url.path
+        ):
+            raise ValueError("埃森哲岗位详情链接结构异常")
+        values = {
+            "external_id": item["guid"],
+            "title": title,
+            "company": self.source.get("company", "埃森哲中国"),
+            "company_type": self.source.get("company_type", "外企"),
+            "location": self._location(locations),
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": "/".join(education),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": updated_at.date().isoformat(),
+            "deadline": self.source.get("deadline", ""),
+            "url": detail_url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        positions = self._positions()
+        expected_country = self.source.get(
+            "country_filter", "China/Mainland"
+        )
+        allowed_countries = set(
+            self.source.get("allowed_api_countries", [expected_country])
+        )
+        expected_experience = self.source.get(
+            "experience_filter", "Early Career"
+        )
+        expected_employee_type = self.source.get(
+            "employee_type", "Full-time"
+        )
+        target_locations = set(self.source.get("location_keywords", []))
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_title_keywords = self.source.get(
+            "exclude_title_keywords", []
+        )
+        jobs = []
+        for item in positions:
+            required = (
+                "guid",
+                "title",
+                "country",
+                "location",
+                "jobTypeDescription",
+                "employeeType",
+                "updateDate",
+                "jobDetailUrl",
+            )
+            if any(item.get(field) is None for field in required):
+                raise ValueError("埃森哲岗位缺少必要字段")
+            title = str(item["title"]).strip()
+            if not title:
+                raise ValueError("埃森哲岗位缺少名称")
+            if (
+                item["country"] not in allowed_countries
+                or item["jobTypeDescription"] != expected_experience
+                or item["employeeType"] != expected_employee_type
+            ):
+                raise ValueError("埃森哲岗位接口返回了非目标筛选条件的岗位")
+            if item["country"] != expected_country:
+                continue
+            locations = self._text_list(item["location"], "地点")
+            if target_locations and not target_locations.intersection(
+                locations
+            ):
+                continue
+            if self._contains(title, exclude_title_keywords):
+                continue
+
+            searchable_parts = [
+                title,
+                str(item.get("jobDescriptionClean", "") or ""),
+                str(item.get("qualificationClean", "") or ""),
+                " ".join(
+                    self._text_list(item.get("function") or [], "职能")
+                ),
+                " ".join(
+                    self._text_list(item.get("skill") or [], "技能")
+                ),
+                " ".join(
+                    self._text_list(
+                        item.get("areaOfInterest") or [], "方向"
+                    )
+                ),
+                " ".join(
+                    self._text_list(
+                        item.get("jobFamilyGroup") or [], "岗位族"
+                    )
+                ),
+            ]
+            searchable = " ".join(searchable_parts)
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            updated_at = self._updated_at(item["updateDate"])
+            if not self._is_target_cycle(item, title, updated_at):
+                continue
+            jobs.append(
+                self._to_job(item, title, locations, updated_at)
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -3643,6 +3938,7 @@ class HtmlLinksCollector(Collector):
 
 
 COLLECTOR_TYPES = {
+    "accenture_early_career": AccentureEarlyCareerCollector,
     "beisen_legacy_campus": BeisenLegacyCampusCollector,
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "campaign_watch": CampaignWatchCollector,
