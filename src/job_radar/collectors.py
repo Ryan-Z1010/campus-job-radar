@@ -3327,6 +3327,150 @@ class CampaignWatchCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class _SectionParser(HTMLParser):
+    """Collect visible text and links from one identified HTML section."""
+
+    def __init__(self, section_id: str) -> None:
+        super().__init__()
+        self.section_id = section_id
+        self.found = False
+        self.section_depth = 0
+        self.ignored_depth = 0
+        self.text_parts: List[str] = []
+        self.links: List[Dict[str, str]] = []
+        self.current_href = ""
+        self.current_link_parts: List[str] = []
+
+    @property
+    def active(self) -> bool:
+        return self.section_depth > 0
+
+    def handle_starttag(self, tag: str, attrs: Iterable[Any]) -> None:
+        lowered = tag.lower()
+        values = dict(attrs)
+        if (
+            not self.active
+            and lowered == "section"
+            and values.get("id") == self.section_id
+        ):
+            self.found = True
+            self.section_depth = 1
+            return
+        if not self.active:
+            return
+        if lowered == "section":
+            self.section_depth += 1
+        if lowered in {"script", "style"}:
+            self.ignored_depth += 1
+            return
+        if self.ignored_depth:
+            return
+        if lowered == "a":
+            self.current_href = str(values.get("href", "") or "")
+            self.current_link_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if not self.active or self.ignored_depth:
+            return
+        self.text_parts.append(data)
+        if self.current_href:
+            self.current_link_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.active:
+            return
+        lowered = tag.lower()
+        if lowered in {"script", "style"} and self.ignored_depth:
+            self.ignored_depth -= 1
+            return
+        if self.ignored_depth:
+            return
+        if lowered == "a" and self.current_href:
+            self.links.append(
+                {
+                    "href": self.current_href,
+                    "text": " ".join(self.current_link_parts),
+                }
+            )
+            self.current_href = ""
+            self.current_link_parts = []
+        if lowered == "section":
+            self.section_depth -= 1
+
+
+class PwcGraduateCampaignCollector(Collector):
+    """Watch PwC China's official graduate section for the target cycle."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _application_url(
+        self, homepage: str, links: List[Dict[str, str]]
+    ) -> str:
+        allowed_hosts = set(self.source.get("allowed_application_hosts", []))
+        required_path = self.source.get("application_path_prefix", "")
+        apply_keywords = self.source.get("application_link_keywords", [])
+        for link in links:
+            candidate = urljoin(homepage, link["href"])
+            searchable = "{} {}".format(link["text"], candidate)
+            if apply_keywords and not self._contains(
+                searchable, apply_keywords
+            ):
+                continue
+            parsed = urlsplit(candidate)
+            if allowed_hosts and parsed.netloc not in allowed_hosts:
+                continue
+            if required_path and not parsed.path.startswith(required_path):
+                continue
+            return candidate
+        raise ValueError("普华永道毕业生计划缺少有效官方申请入口")
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        body = fetch_bytes(homepage).decode("utf-8", errors="replace")
+        parser = _SectionParser(
+            self.source.get("section_id", "graduate")
+        )
+        parser.feed(body)
+        if not parser.found:
+            raise ValueError("普华永道官网缺少毕业生计划区块")
+
+        visible_text = " ".join(" ".join(parser.text_parts).split())
+        required_text = self.source.get("required_text", "毕业生计划")
+        if required_text and required_text not in visible_text:
+            raise ValueError("普华永道毕业生计划区块缺少预期标识")
+        application_url = self._application_url(homepage, parser.links)
+
+        target_keywords = self.source.get("target_keywords", [])
+        if target_keywords and not self._contains(
+            visible_text, target_keywords
+        ):
+            return []
+
+        values = {
+            "external_id": self.source.get(
+                "external_id", "{}:graduate".format(self.source["id"])
+            ),
+            "title": self.source["title"],
+            "company": self.source.get("company", self.source["name"]),
+            "company_type": self.source.get("company_type", "外企"),
+            "location": self.source.get("location", "待官网岗位确认"),
+            "description": self.source.get("description", ""),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self.source.get("published_at", ""),
+            "deadline": self.source.get("deadline", ""),
+            "url": application_url,
+            "source_name": self.source["name"],
+        }
+        return [JobPosting.from_mapping(values)]
+
+
 class BeisenPortalCampaignCollector(Collector):
     """Follow public Beisen portal page pointers and detect a target campaign."""
 
@@ -3956,6 +4100,7 @@ COLLECTOR_TYPES = {
     "liepin_static_campus": LiepinStaticCampusCollector,
     "moka_campus": MokaCampusCollector,
     "netease_game_campus": NeteaseGameCampusCollector,
+    "pwc_graduate_campaign": PwcGraduateCampaignCollector,
     "shein_campus": SheinCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
