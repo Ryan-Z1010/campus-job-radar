@@ -1579,6 +1579,75 @@
       "graduation_years": [2027],
       "deadline": "以官方公告及岗位为准",
       "note": "已接入网易游戏互娱官方校园招聘导航与岗位公开接口。采集器从“应届生”导航自动识别“网易互娱2027届校园招聘”项目并校验项目链接，完整读取公开分页，只保留广州、上海、深圳、北京的AI、Agent、大模型、算法、数据、软件、开发、测试及基础架构岗位，排除游戏艺术、运营、市场渠道与职能支持岗位。2026-07-29实时核验时项目公开54个全职岗位。"
+    },
+    {
+      "id": "vipshop",
+      "name": "唯品会",
+      "type": "moka_campus",
+      "enabled": true,
+      "homepage": "https://app-tc.mokahr.com/campus-recruitment/vipshophr/10039/",
+      "url": "https://app-tc.mokahr.com/api/outer/ats-apply/website/jobs/v2",
+      "detail_url": "https://app-tc.mokahr.com/api/outer/ats-apply/website/job",
+      "detail_url_template": "https://app-tc.mokahr.com/campus-recruitment/vipshophr/10039#/job/{position_id}",
+      "org_id": "vipshophr",
+      "site_id": 10039,
+      "company": "唯品会（中国）有限公司",
+      "company_type": "私企",
+      "location": "工作地点待官网岗位详情补充",
+      "location_keywords": ["广州", "上海", "深圳", "北京"],
+      "target_cycle_keywords": ["2027届", "2027 届"],
+      "include_keywords": [
+        "AI",
+        "人工智能",
+        "智能体",
+        "Agent",
+        "大模型",
+        "LLM",
+        "多模态",
+        "AIGC",
+        "算法",
+        "机器学习",
+        "深度学习",
+        "计算机视觉",
+        "数据",
+        "大数据",
+        "数据仓库",
+        "数据平台",
+        "数据分析",
+        "软件",
+        "开发",
+        "后端",
+        "前端",
+        "客户端",
+        "测试",
+        "云计算",
+        "基础架构",
+        "NLP",
+        "RAG",
+        "推荐",
+        "搜索"
+      ],
+      "exclude_keywords": [
+        "销售",
+        "客服",
+        "市场营销",
+        "人力资源",
+        "财务",
+        "法务"
+      ],
+      "exclude_title_keywords": [
+        "实习",
+        "暑期"
+      ],
+      "exclude_commitments": [
+        "实习"
+      ],
+      "page_size": 30,
+      "max_pages": 10,
+      "graduation_years": [2027],
+      "education": "具体学历、专业和海外毕业时间要求以岗位任职要求为准",
+      "deadline": "以官方公告及岗位为准",
+      "note": "已接入唯品会官方Moka校园招聘门户的公开岗位列表与详情接口。采集器使用匿名会话读取官网公开初始化数据，并按页面公开提供的标准AES参数解析公开响应；不使用账号、验证码、私有令牌或请求签名。只保留2027届正式校招中的AI、Agent、大模型、算法、数据、软件、开发和测试岗位，并强制排除实习。2026-07-30实时核验时官网仅有3个2027届实习岗位，因此当前正常返回0条正式岗位。"
     }
   ]
 }

@@ -5,6 +5,9 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
 from job_radar.collectors import (
     BeisenLegacyCampusCollector,
     BeisenPortalCampaignCollector,
@@ -19,6 +22,7 @@ from job_radar.collectors import (
     IguopinCompanyCollector,
     JsonApiCollector,
     LiepinStaticCampusCollector,
+    MokaCampusCollector,
     NeteaseGameCampusCollector,
     NoticeJsonCollector,
     WebNoticeCollector,
@@ -238,6 +242,166 @@ class CollectorTests(unittest.TestCase):
             NeteaseGameCampusCollector(
                 self._netease_game_source()
             ).collect()
+
+    @staticmethod
+    def _moka_source():
+        return {
+            "id": "vipshop",
+            "name": "唯品会",
+            "type": "moka_campus",
+            "homepage": (
+                "https://app-tc.mokahr.com/campus-recruitment/"
+                "vipshophr/10039/"
+            ),
+            "url": (
+                "https://app-tc.mokahr.com/api/outer/ats-apply/"
+                "website/jobs/v2"
+            ),
+            "detail_url": (
+                "https://app-tc.mokahr.com/api/outer/ats-apply/"
+                "website/job"
+            ),
+            "org_id": "vipshophr",
+            "site_id": 10039,
+            "company": "唯品会（中国）有限公司",
+            "company_type": "私企",
+            "location": "工作地点待官网岗位详情补充",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "target_cycle_keywords": ["2027届"],
+            "include_keywords": ["AI", "数据", "软件", "开发", "算法"],
+            "exclude_keywords": ["销售", "客服"],
+            "exclude_title_keywords": ["实习"],
+            "exclude_commitments": ["实习"],
+            "page_size": 30,
+            "max_pages": 5,
+            "graduation_years": [2027],
+            "education": "具体学历要求以岗位为准",
+            "deadline": "以官方岗位为准",
+        }
+
+    def test_moka_decodes_public_api_envelope(self):
+        aes_iv = "de7c21ed8d6f50fe"
+        key = "5a5eeeb86f96244e"
+        payload = {
+            "code": 0,
+            "data": {"jobs": [], "jobStats": {"total": 0}},
+            "msg": "成功",
+            "success": True,
+        }
+        plaintext = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        encrypted = AES.new(
+            key.encode("utf-8"),
+            AES.MODE_CBC,
+            aes_iv.encode("utf-8"),
+        ).encrypt(pad(plaintext, AES.block_size))
+        envelope = json.dumps(
+            {
+                "data": base64.b64encode(encrypted).decode("ascii"),
+                "necromancer": key,
+            }
+        ).encode("utf-8")
+
+        data = MokaCampusCollector._decode_api_payload(
+            envelope,
+            aes_iv,
+            "岗位列表",
+        )
+
+        self.assertEqual(data["jobStats"]["total"], 0)
+        self.assertEqual(data["jobs"], [])
+
+    @patch.object(MokaCampusCollector, "_detail")
+    @patch.object(MokaCampusCollector, "_positions")
+    @patch.object(MokaCampusCollector, "_portal_data")
+    def test_moka_filters_internships_and_maps_target_job(
+        self,
+        portal,
+        positions,
+        detail,
+    ):
+        portal.return_value = {"aesIv": "de7c21ed8d6f50fe"}
+        positions.return_value = [
+            {
+                "id": "formal-ai",
+                "title": "【2027届校园招聘】AI应用开发工程师",
+            },
+            {
+                "id": "intern-dev",
+                "title": "【2027届实习生】中台研发",
+            },
+            {
+                "id": "previous-data",
+                "title": "【2026届校园招聘】数据分析师",
+            },
+        ]
+        detail.return_value = {
+            "id": "formal-ai",
+            "orgId": "vipshophr",
+            "status": "open",
+            "title": "【2027届校园招聘】AI应用开发工程师",
+            "commitment": "全职",
+            "education": "硕士",
+            "locations": [{"id": 1, "name": "广州市"}],
+            "department": {"id": 2, "name": "人工智能部"},
+            "zhineng": {"id": 3, "name": "技术类"},
+            "jobDescription": (
+                "<p>负责大模型、Agent与数据平台研发。</p>"
+            ),
+            "publishedAt": "2026-08-01T09:30:00",
+        }
+
+        jobs = MokaCampusCollector(self._moka_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "formal-ai")
+        self.assertEqual(jobs[0].company, "唯品会（中国）有限公司")
+        self.assertEqual(jobs[0].location, "广州市")
+        self.assertEqual(jobs[0].education, "硕士")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://app-tc.mokahr.com/campus-recruitment/"
+                "vipshophr/10039#/job/formal-ai"
+            ),
+        )
+        self.assertIn("招聘性质：全职", jobs[0].description)
+        self.assertIn("大模型、Agent与数据平台研发", jobs[0].description)
+        detail.assert_called_once()
+
+    @patch.object(MokaCampusCollector, "_detail")
+    @patch.object(MokaCampusCollector, "_positions")
+    @patch.object(MokaCampusCollector, "_portal_data")
+    def test_moka_returns_empty_for_current_internship_only_jobs(
+        self,
+        portal,
+        positions,
+        detail,
+    ):
+        portal.return_value = {"aesIv": "de7c21ed8d6f50fe"}
+        positions.return_value = [
+            {
+                "id": "intern-1",
+                "title": "【2027届实习生】中台研发",
+            },
+            {
+                "id": "intern-2",
+                "title": "【2027届实习生】鸿蒙开发",
+            },
+            {
+                "id": "intern-3",
+                "title": "【2027届实习生】IOS开发",
+            },
+        ]
+
+        jobs = MokaCampusCollector(self._moka_source()).collect()
+
+        self.assertEqual(jobs, [])
+        detail.assert_not_called()
 
     @staticmethod
     def _cvte_source():

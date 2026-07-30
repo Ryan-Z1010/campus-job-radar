@@ -7,11 +7,20 @@ import re
 import zlib
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
+from http.cookiejar import CookieJar
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import (
+    HTTPCookieProcessor,
+    Request,
+    build_opener,
+    urlopen,
+)
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 from .models import JobPosting
 from .network import urlopen_with_retry
@@ -1539,6 +1548,400 @@ class NeteaseGameCampusCollector(Collector):
         return jobs
 
 
+class _MokaInitDataParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.init_data = ""
+
+    def handle_starttag(self, tag: str, attrs: Iterable[Any]) -> None:
+        if tag.lower() != "input":
+            return
+        values = dict(attrs)
+        if values.get("id") == "init-data":
+            self.init_data = values.get("value", "")
+
+
+class MokaCampusCollector(Collector):
+    """Collect target-cycle jobs from a public Moka campus portal."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _portal_data(self, opener: Any) -> Dict[str, Any]:
+        request = Request(
+            self.source["homepage"],
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        with urlopen_with_retry(
+            request,
+            timeout=20,
+            opener=opener.open,
+        ) as response:
+            body = response.read().decode("utf-8", errors="replace")
+
+        parser = _MokaInitDataParser()
+        parser.feed(body)
+        if not parser.init_data:
+            raise ValueError("Moka校招门户缺少公开初始化数据")
+        try:
+            payload = json.loads(parser.init_data)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Moka校招门户返回了无效初始化数据") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Moka校招门户初始化数据结构异常")
+
+        org = payload.get("org")
+        if not isinstance(org, dict):
+            raise ValueError("Moka校招门户缺少机构信息")
+        expected_org_id = self.source["org_id"]
+        expected_site_id = str(self.source["site_id"])
+        if (
+            str(org.get("id", "")) != expected_org_id
+            or str(payload.get("siteId", "")) != expected_site_id
+            or payload.get("mode") != "campus"
+        ):
+            raise ValueError("Moka校招门户返回了非目标校招站点")
+        expected_company = self.source.get("company", "")
+        if expected_company and org.get("name") != expected_company:
+            raise ValueError("Moka校招门户返回了非目标公司")
+
+        aes_iv = payload.get("aesIv")
+        if not isinstance(aes_iv, str) or len(aes_iv.encode("utf-8")) != 16:
+            raise ValueError("Moka校招门户缺少有效公开解码参数")
+        return payload
+
+    @staticmethod
+    def _decode_api_payload(raw: bytes, aes_iv: str, label: str) -> Dict[str, Any]:
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Moka{}接口返回了无效 JSON".format(label)) from exc
+        if not isinstance(envelope, dict):
+            raise ValueError("Moka{}接口响应结构异常".format(label))
+
+        if "necromancer" in envelope:
+            key = envelope.get("necromancer")
+            encrypted = envelope.get("data")
+            if (
+                not isinstance(key, str)
+                or len(key.encode("utf-8")) != 16
+                or not isinstance(encrypted, str)
+            ):
+                raise ValueError("Moka{}接口缺少有效公开解码参数".format(label))
+            try:
+                ciphertext = base64.b64decode(encrypted, validate=True)
+                plaintext = unpad(
+                    AES.new(
+                        key.encode("utf-8"),
+                        AES.MODE_CBC,
+                        aes_iv.encode("utf-8"),
+                    ).decrypt(ciphertext),
+                    AES.block_size,
+                )
+                payload = json.loads(plaintext.decode("utf-8"))
+            except (
+                ValueError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                binascii.Error,
+            ) as exc:
+                raise ValueError(
+                    "Moka{}接口公开数据解码失败".format(label)
+                ) from exc
+        else:
+            payload = envelope
+
+        if (
+            not isinstance(payload, dict)
+            or payload.get("success") is not True
+            or payload.get("code") != 0
+            or not isinstance(payload.get("data"), dict)
+        ):
+            raise ValueError("Moka{}接口响应异常".format(label))
+        return payload["data"]
+
+    def _post(
+        self,
+        opener: Any,
+        url: str,
+        payload: Dict[str, Any],
+        aes_iv: str,
+        label: str,
+    ) -> Dict[str, Any]:
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://app-tc.mokahr.com",
+                "Referer": self.source["homepage"],
+            },
+            method="POST",
+        )
+        with urlopen_with_retry(
+            request,
+            timeout=20,
+            opener=opener.open,
+        ) as response:
+            raw = response.read()
+        return self._decode_api_payload(raw, aes_iv, label)
+
+    def _positions(
+        self,
+        opener: Any,
+        aes_iv: str,
+    ) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 30))
+        max_pages = int(self.source.get("max_pages", 10))
+        if page_size <= 0 or max_pages <= 0:
+            raise ValueError("Moka岗位分页配置必须为正整数")
+
+        positions = []
+        seen_ids = set()
+        total = None
+        for page in range(max_pages):
+            payload = {
+                "orgId": self.source["org_id"],
+                "siteId": self.source["site_id"],
+                "limit": page_size,
+                "offset": page * page_size,
+                "needStat": True,
+                "site": "campus",
+                "locale": "zh-CN",
+            }
+            data = self._post(
+                opener,
+                self.source["url"],
+                payload,
+                aes_iv,
+                "岗位列表",
+            )
+            stats = data.get("jobStats")
+            page_items = data.get("jobs")
+            if (
+                not isinstance(stats, dict)
+                or not isinstance(stats.get("total"), int)
+                or stats["total"] < 0
+                or not isinstance(page_items, list)
+                or any(not isinstance(item, dict) for item in page_items)
+            ):
+                raise ValueError("Moka岗位列表分页结构异常")
+            if total is None:
+                total = stats["total"]
+                if total > page_size * max_pages:
+                    raise ValueError("Moka岗位总数超过配置分页上限")
+            elif stats["total"] != total:
+                raise ValueError("Moka岗位列表分页总数发生变化")
+
+            for item in page_items:
+                external_id = str(item.get("id", "") or "").strip()
+                if not external_id:
+                    raise ValueError("Moka岗位缺少稳定 ID")
+                if external_id in seen_ids:
+                    raise ValueError("Moka岗位分页返回了重复 ID")
+                seen_ids.add(external_id)
+                positions.append(item)
+            if len(positions) >= total:
+                break
+            if not page_items:
+                break
+
+        if total is None or len(positions) != total:
+            raise ValueError("Moka岗位列表没有完整返回全部分页")
+        return positions
+
+    def _detail(
+        self,
+        opener: Any,
+        aes_iv: str,
+        job_id: str,
+    ) -> Dict[str, Any]:
+        return self._post(
+            opener,
+            self.source["detail_url"],
+            {
+                "orgId": self.source["org_id"],
+                "siteId": self.source["site_id"],
+                "jobId": job_id,
+                "locale": "zh-CN",
+            },
+            aes_iv,
+            "岗位详情",
+        )
+
+    @staticmethod
+    def _locations(value: Any) -> str:
+        if not isinstance(value, list):
+            raise ValueError("Moka岗位工作地点结构异常")
+        names = []
+        for item in value:
+            if isinstance(item, str):
+                name = item.strip()
+            elif isinstance(item, dict):
+                name = str(
+                    item.get("name")
+                    or item.get("cityName")
+                    or item.get("label")
+                    or ""
+                ).strip()
+            else:
+                raise ValueError("Moka岗位工作地点元素结构异常")
+            if name and name not in names:
+                names.append(name)
+        return "、".join(names)
+
+    def _to_job(self, detail: Dict[str, Any]) -> JobPosting:
+        external_id = str(detail["id"]).strip()
+        title = str(detail["title"]).strip()
+        location = self._locations(detail.get("locations"))
+        if not location:
+            location = self.source.get("location", "待核对")
+        department = detail.get("department")
+        department_name = (
+            str(department.get("name", "") or "").strip()
+            if isinstance(department, dict)
+            else ""
+        )
+        function = detail.get("zhineng")
+        function_name = (
+            str(function.get("name", "") or "").strip()
+            if isinstance(function, dict)
+            else ""
+        )
+        job_description = _html_fragment_text(
+            detail.get("jobDescription", "")
+        )
+        description_parts = [
+            "招聘性质：{}".format(detail.get("commitment", ""))
+            if detail.get("commitment")
+            else "",
+            "职能：{}".format(function_name) if function_name else "",
+            "部门：{}".format(department_name) if department_name else "",
+            job_description,
+        ]
+        values = {
+            "external_id": external_id,
+            "title": title,
+            "company": self.source["company"],
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location,
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": str(detail.get("education", "") or "").strip()
+            or self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": str(
+                detail.get("publishedAt", "") or ""
+            ).strip(),
+            "deadline": self.source.get("deadline", ""),
+            "url": self.source.get(
+                "detail_url_template",
+                (
+                    "https://app-tc.mokahr.com/campus-recruitment/"
+                    "{org_id}/{site_id}#/job/{position_id}"
+                ),
+            ).format(
+                org_id=self.source["org_id"],
+                site_id=self.source["site_id"],
+                position_id=external_id,
+            ),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        portal_data = self._portal_data(opener)
+        positions = self._positions(opener, portal_data["aesIv"])
+        target_cycle_keywords = self.source.get(
+            "target_cycle_keywords", []
+        )
+        exclude_title_keywords = self.source.get(
+            "exclude_title_keywords", []
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        exclude_commitments = set(
+            self.source.get("exclude_commitments", [])
+        )
+        location_keywords = self.source.get("location_keywords", [])
+
+        jobs = []
+        for item in positions:
+            title = str(item.get("title", "") or "").strip()
+            if not title:
+                raise ValueError("Moka岗位缺少名称")
+            if target_cycle_keywords and not self._contains(
+                title, target_cycle_keywords
+            ):
+                continue
+            if self._contains(title, exclude_title_keywords):
+                continue
+
+            external_id = str(item["id"]).strip()
+            detail = self._detail(
+                opener,
+                portal_data["aesIv"],
+                external_id,
+            )
+            if (
+                str(detail.get("id", "") or "").strip() != external_id
+                or str(detail.get("orgId", "") or "").strip()
+                != self.source["org_id"]
+                or str(detail.get("status", "") or "").strip() != "open"
+            ):
+                raise ValueError("Moka岗位详情返回了非目标在招岗位")
+            commitment = str(
+                detail.get("commitment", "") or ""
+            ).strip()
+            if commitment in exclude_commitments:
+                continue
+
+            location = self._locations(detail.get("locations"))
+            if (
+                location
+                and location_keywords
+                and not self._contains(location, location_keywords)
+            ):
+                continue
+            searchable = " ".join(
+                [
+                    title,
+                    commitment,
+                    _html_fragment_text(
+                        detail.get("jobDescription", "")
+                    ),
+                    json.dumps(
+                        detail.get("department", {}),
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        detail.get("zhineng", {}),
+                        ensure_ascii=False,
+                    ),
+                ]
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            jobs.append(self._to_job(detail))
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -2614,6 +3017,7 @@ COLLECTOR_TYPES = {
     "iguopin_company": IguopinCompanyCollector,
     "json_api": JsonApiCollector,
     "liepin_static_campus": LiepinStaticCampusCollector,
+    "moka_campus": MokaCampusCollector,
     "netease_game_campus": NeteaseGameCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
