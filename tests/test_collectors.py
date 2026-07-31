@@ -31,6 +31,7 @@ from job_radar.collectors import (
     NoticeJsonCollector,
     PwcGraduateCampaignCollector,
     SheinCampusCollector,
+    TencentCampusCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
 )
@@ -865,6 +866,312 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "非目标筛选条件"):
             HuaweiCampusCollector(self._huawei_source()).collect()
+
+    @staticmethod
+    def _tencent_source(**overrides):
+        source = {
+            "id": "tencent_china",
+            "name": "腾讯",
+            "type": "tencent_campus",
+            "homepage": "https://join.qq.com/post.html",
+            "project_url": (
+                "https://join.qq.com/api/v1/position/getProjectMapping"
+            ),
+            "url": (
+                "https://join.qq.com/api/v1/position/searchPosition"
+            ),
+            "detail_url": "https://join.qq.com/post_detail.html",
+            "company": "腾讯",
+            "company_type": "私企",
+            "target_graduation_date": "2026-11-30",
+            "project_include_keywords": ["校园招聘", "应届生"],
+            "project_exclude_keywords": ["实习"],
+            "location_keywords": [
+                "广州",
+                "上海",
+                "深圳总部",
+                "北京",
+            ],
+            "location_map": {
+                "广州": "广州",
+                "上海": "上海",
+                "深圳总部": "深圳",
+                "北京": "北京",
+            },
+            "include_keywords": [
+                "AI",
+                "智能体",
+                "大模型",
+                "数据",
+                "算法",
+                "开发",
+                "技术研究",
+                "云计算",
+                "数据库",
+            ],
+            "exclude_keywords": [
+                "销售",
+                "市场营销",
+                "人力资源",
+            ],
+            "page_size": 50,
+            "max_results": 1000,
+            "education": (
+                "腾讯正式校园招聘岗位，具体学历和专业要求以岗位详情为准"
+            ),
+            "deadline": "以官方项目页面为准",
+        }
+        source.update(overrides)
+        return source
+
+    @staticmethod
+    def _tencent_project_payload():
+        return {
+            "message": "",
+            "status": 0,
+            "data": [
+                {
+                    "id": 2,
+                    "recruitType": 2,
+                    "recruitTypeName": "实习生",
+                    "status": 1,
+                    "subProjectList": [
+                        {
+                            "mappingId": 2,
+                            "projectId": "2",
+                            "projectName": "应届实习",
+                            "recruitYear": "2026",
+                            "status": 1,
+                            "recruitRangDesc": (
+                                "毕业时间：2026年9月1日-2027年12月31日"
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "id": 1,
+                    "recruitType": 1,
+                    "recruitTypeName": "应届毕业生",
+                    "status": 1,
+                    "subProjectList": [
+                        {
+                            "mappingId": 1,
+                            "projectId": "1",
+                            "projectName": "2026校园招聘",
+                            "recruitYear": "2026",
+                            "status": 1,
+                            "recruitRangDesc": (
+                                "毕业时间：2025年1月1日-2026年12月31日"
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "id": 3,
+                    "recruitType": 999,
+                    "recruitTypeName": "人才专项",
+                    "status": 1,
+                    "subProjectList": [
+                        {
+                            "mappingId": 14,
+                            "projectId": "14",
+                            "projectName": "青云计划-应届生",
+                            "recruitYear": "2027",
+                            "status": 1,
+                            "recruitRangDesc": (
+                                "毕业时间：2026年1月-2027年12月毕业的本硕博同学"
+                            ),
+                        },
+                        {
+                            "mappingId": 20,
+                            "projectId": "20",
+                            "projectName": "青云计划-实习生",
+                            "recruitYear": "2026",
+                            "status": 1,
+                            "recruitRangDesc": (
+                                "毕业时间：2026年9月以后毕业的本硕博同学"
+                            ),
+                        },
+                    ],
+                },
+            ],
+        }
+
+    @staticmethod
+    def _tencent_position(**overrides):
+        position = {
+            "id": 21275,
+            "postId": "1148729229714935808",
+            "position": 101,
+            "positionTitle": "后台开发",
+            "positionFamily": 2,
+            "projectId": 1,
+            "bgs": "CDG CSIG TEG",
+            "workCities": "深圳总部 北京 上海 广州",
+            "projectName": "应届毕业生",
+            "recruitLabelName": "应届毕业生",
+        }
+        position.update(overrides)
+        return position
+
+    @staticmethod
+    def _tencent_search_payload(items, count=None):
+        return {
+            "message": "",
+            "status": 0,
+            "data": {
+                "positionList": items,
+                "count": len(items) if count is None else count,
+            },
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tencent_selects_date_eligible_projects_and_filters_jobs(
+        self, fetch
+    ):
+        qingyun = self._tencent_position(
+            id=22025,
+            postId="1274356447064759296",
+            positionTitle="基于大模型Agent的推荐研究",
+            projectId=14,
+            projectName="青云计划-应届生",
+            recruitLabelName="应届毕业生 青云计划",
+            workCities="上海",
+        )
+        excluded = self._tencent_position(
+            id=22030,
+            postId="1274356447064759301",
+            positionTitle="AI行业销售经理",
+            workCities="深圳总部",
+        )
+        unrelated = self._tencent_position(
+            id=22031,
+            postId="1274356447064759302",
+            positionTitle="视觉设计",
+            workCities="广州",
+        )
+        other_city = self._tencent_position(
+            id=22032,
+            postId="1274356447064759303",
+            positionTitle="数据分析",
+            workCities="杭州",
+        )
+        fetch.side_effect = [
+            json.dumps(
+                self._tencent_project_payload(), ensure_ascii=False
+            ).encode("utf-8"),
+            json.dumps(
+                self._tencent_search_payload(
+                    [
+                        self._tencent_position(),
+                        qingyun,
+                        excluded,
+                        unrelated,
+                        other_city,
+                    ]
+                ),
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        jobs = TencentCampusCollector(self._tencent_source()).collect()
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0].title, "后台开发")
+        self.assertEqual(jobs[0].company, "腾讯")
+        self.assertEqual(jobs[0].company_type, "私企")
+        self.assertEqual(jobs[0].location, "广州/上海/深圳/北京")
+        self.assertEqual(jobs[0].graduation_years, [2025, 2026])
+        self.assertIn("2026校园招聘", jobs[0].description)
+        self.assertIn(
+            "postid=1148729229714935808", jobs[0].url
+        )
+        self.assertEqual(jobs[1].graduation_years, [2026, 2027])
+        self.assertIn("青云计划-应届生", jobs[1].description)
+
+        search_call = fetch.call_args_list[1]
+        self.assertEqual(search_call.kwargs["method"], "POST")
+        self.assertEqual(
+            search_call.kwargs["json_body"]["projectMappingIdList"],
+            [1, 14],
+        )
+        self.assertEqual(
+            search_call.kwargs["json_body"]["workCountryType"], 1
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tencent_returns_empty_when_no_project_covers_graduation(
+        self, fetch
+    ):
+        fetch.return_value = json.dumps(
+            self._tencent_project_payload(), ensure_ascii=False
+        ).encode("utf-8")
+
+        jobs = TencentCampusCollector(
+            self._tencent_source(
+                target_graduation_date="2028-11-30"
+            )
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tencent_rejects_partial_api_result(self, fetch):
+        fetch.side_effect = [
+            json.dumps(
+                self._tencent_project_payload(), ensure_ascii=False
+            ).encode("utf-8"),
+            json.dumps(
+                self._tencent_search_payload(
+                    [self._tencent_position()], count=2
+                ),
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError, "没有完整返回筛选结果"
+        ):
+            TencentCampusCollector(self._tencent_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tencent_rejects_unexpected_project(self, fetch):
+        unexpected = self._tencent_position(
+            projectId=2,
+            projectName="应届实习",
+            recruitLabelName="应届实习",
+        )
+        fetch.side_effect = [
+            json.dumps(
+                self._tencent_project_payload(), ensure_ascii=False
+            ).encode("utf-8"),
+            json.dumps(
+                self._tencent_search_payload([unexpected]),
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "非目标招聘项目"):
+            TencentCampusCollector(self._tencent_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tencent_rejects_duplicate_post_id(self, fetch):
+        duplicate = self._tencent_position(id=21276)
+        fetch.side_effect = [
+            json.dumps(
+                self._tencent_project_payload(), ensure_ascii=False
+            ).encode("utf-8"),
+            json.dumps(
+                self._tencent_search_payload(
+                    [self._tencent_position(), duplicate]
+                ),
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "重复 ID"):
+            TencentCampusCollector(self._tencent_source()).collect()
 
     @staticmethod
     def _hsbc_source():
