@@ -21,6 +21,7 @@ from job_radar.collectors import (
     GzRecruitCompanyCollector,
     HotjobCampusCollector,
     HsbcProgrammeCollector,
+    HuaweiCampusCollector,
     IbmEntryLevelCollector,
     IguopinCompanyCollector,
     JsonApiCollector,
@@ -597,6 +598,273 @@ class CollectorTests(unittest.TestCase):
             ValueError, "非目标筛选条件"
         ):
             IbmEntryLevelCollector(self._ibm_source()).collect()
+
+    @staticmethod
+    def _huawei_source():
+        return {
+            "id": "huawei_china",
+            "name": "华为",
+            "type": "huawei_campus",
+            "homepage": (
+                "https://career.huawei.com/reccampportal/portal5/"
+                "campus-recruitment.html?jobTypes=1"
+            ),
+            "announcement_url": (
+                "https://career.huawei.com/reccampportal/portal5/"
+                "news.html"
+            ),
+            "url": (
+                "https://career.huawei.com/reccampportal/services/"
+                "portal/portalpub/getJob/newHr/page"
+            ),
+            "company": "华为",
+            "company_type": "私企",
+            "required_text": "news-bulletin-list",
+            "launch_markers": [
+                "华为2027届应届生招聘启动",
+                "2027届华为应届生招聘启动",
+            ],
+            "job_types": "1",
+            "job_type": "0",
+            "student_abroad_priority": "1",
+            "detail_job_type": "2",
+            "location_keywords": [
+                "Guangzhou",
+                "广州",
+                "Shanghai",
+                "上海",
+                "Shenzhen",
+                "深圳",
+                "Beijing",
+                "北京",
+            ],
+            "location_map": {
+                "Guangzhou": "广州",
+                "广州": "广州",
+                "Shanghai": "上海",
+                "上海": "上海",
+                "Shenzhen": "深圳",
+                "深圳": "深圳",
+                "Beijing": "北京",
+                "北京": "北京",
+            },
+            "include_keywords": [
+                "AI",
+                "人工智能",
+                "数据",
+                "算法",
+                "软件",
+                "开发",
+                "云计算",
+                "计算机",
+            ],
+            "exclude_keywords": [
+                "实习",
+                "销售",
+                "市场营销",
+                "人力资源",
+            ],
+            "target_cycle_years": [2027],
+            "target_published_start": "2026-07-01",
+            "target_published_end": "2027-06-30",
+            "page_size": 50,
+            "max_results": 500,
+            "education": (
+                "华为校园招聘留学生岗位，具体学历、专业与海外毕业"
+                "时间窗口以当届公告及岗位详情为准"
+            ),
+            "graduation_years": [2027],
+        }
+
+    @staticmethod
+    def _huawei_page(target_launch=False):
+        target = (
+            '{ title: "华为2027届应届生招聘启动", '
+            'isHot: 1, createTime: "2026-08-15", '
+            'link: "newsInfo_32.html" },'
+            if target_launch
+            else ""
+        )
+        return (
+            '<html><body><div class="news-bulletin-list"></div>'
+            "<script>const newsList = ["
+            '{ title: "华为2026届应届生招聘启动", '
+            'isHot: 1, createTime: "2025-08-15", link: "old.html" },'
+            '{ title: "华为2027届实习生招聘正式启动", '
+            'isHot: 1, createTime: "2026-03-15", link: "intern.html" },'
+            '{ title: "华为2027届顶尖AI人才招聘专项行动", '
+            'isHot: 1, createTime: "2026-05-19", link: "ai.html" },'
+            + target
+            + "];</script></body></html>"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _huawei_job(**overrides):
+        job = {
+            "jobId": 27001,
+            "advertisementCode": "AD2026081500001",
+            "dataSource": 1,
+            "jobname": "AI数据开发工程师",
+            "jobType": "0",
+            "studentAbroadPriority": "1",
+            "jobFamilyName": "研发族",
+            "jobArea": "中国/深圳,中国/上海",
+            "jobAddress": (
+                "China\\Guangdong-Shenzhen,"
+                "China\\Shanghai-Shanghai"
+            ),
+            "mainBusiness": (
+                "负责大模型数据平台及AI应用的软件开发。"
+            ),
+            "jobRequire": (
+                "计算机、人工智能、数据科学等相关专业硕士优先。"
+            ),
+            "releaseDate": "2026-08-15T10:30:00.000+0800",
+            "expirationDate": "2026-11-30T23:59:59.000+0800",
+        }
+        job.update(overrides)
+        return job
+
+    @staticmethod
+    def _huawei_payload(items, total=None, page=1, page_size=50):
+        total_rows = len(items) if total is None else total
+        total_pages = (
+            (total_rows + page_size - 1) // page_size
+            if total_rows
+            else 0
+        )
+        return {
+            "pageVO": {
+                "totalRows": total_rows,
+                "curPage": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+            },
+            "result": items,
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_huawei_ignores_intern_and_ai_campaign_before_grad_launch(
+        self, fetch
+    ):
+        fetch.return_value = self._huawei_page(target_launch=False)
+
+        jobs = HuaweiCampusCollector(self._huawei_source()).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_huawei_filters_and_maps_target_overseas_job(self, fetch):
+        previous_cycle = self._huawei_job(
+            jobId=26001,
+            advertisementCode="AD2025081500001",
+            jobname="2026届数据开发工程师",
+            jobArea="中国/广州",
+            jobAddress="China\\Guangdong-Guangzhou",
+            releaseDate="2025-08-15T10:30:00.000+0800",
+        )
+        unrelated = self._huawei_job(
+            jobId=27002,
+            advertisementCode="AD2026081500002",
+            jobname="公共关系专员",
+            jobArea="中国/北京",
+            jobAddress="China\\Beijing-Beijing",
+            mainBusiness="负责品牌传播和公共关系沟通。",
+            jobRequire="新闻传播相关专业。",
+        )
+        excluded = self._huawei_job(
+            jobId=27003,
+            advertisementCode="AD2026081500003",
+            jobname="AI行业销售经理",
+            jobArea="中国/深圳",
+            jobAddress="China\\Guangdong-Shenzhen",
+        )
+        other_city = self._huawei_job(
+            jobId=27004,
+            advertisementCode="AD2026081500004",
+            jobname="软件开发工程师",
+            jobArea="中国/杭州",
+            jobAddress="China\\Zhejiang-Hangzhou",
+        )
+        payload = self._huawei_payload(
+            [
+                self._huawei_job(),
+                previous_cycle,
+                unrelated,
+                excluded,
+                other_city,
+            ]
+        )
+        fetch.side_effect = [
+            self._huawei_page(target_launch=True),
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ]
+
+        jobs = HuaweiCampusCollector(self._huawei_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "AD2026081500001")
+        self.assertEqual(jobs[0].title, "AI数据开发工程师")
+        self.assertEqual(jobs[0].company, "华为")
+        self.assertEqual(jobs[0].company_type, "私企")
+        self.assertEqual(jobs[0].location, "上海/深圳")
+        self.assertEqual(jobs[0].published_at, "2026-08-15")
+        self.assertEqual(jobs[0].deadline, "2026-11-30")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("大模型数据平台", jobs[0].description)
+        self.assertIn("jobId=27001", jobs[0].url)
+        self.assertIn("dataSource=1", jobs[0].url)
+
+        api_call = fetch.call_args_list[1]
+        self.assertIn("jobTypes=1", api_call.args[0])
+        self.assertIn("/page/50/1?", api_call.args[0])
+        self.assertEqual(
+            api_call.kwargs["headers"]["x-jalor-tenantAlias"], "hcm"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_huawei_empty_result_after_grad_launch_is_successful(self, fetch):
+        fetch.side_effect = [
+            self._huawei_page(target_launch=True),
+            json.dumps(self._huawei_payload([])).encode("utf-8"),
+        ]
+
+        self.assertEqual(
+            HuaweiCampusCollector(self._huawei_source()).collect(),
+            [],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_huawei_rejects_partial_api_result(self, fetch):
+        fetch.side_effect = [
+            self._huawei_page(target_launch=True),
+            json.dumps(
+                self._huawei_payload([self._huawei_job()], total=2)
+            ).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError, "没有完整返回筛选结果"
+        ):
+            HuaweiCampusCollector(self._huawei_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_huawei_rejects_unexpected_recruitment_type(self, fetch):
+        payload = self._huawei_payload(
+            [
+                self._huawei_job(
+                    studentAbroadPriority="0",
+                )
+            ]
+        )
+        fetch.side_effect = [
+            self._huawei_page(target_launch=True),
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "非目标筛选条件"):
+            HuaweiCampusCollector(self._huawei_source()).collect()
 
     @staticmethod
     def _hsbc_source():
