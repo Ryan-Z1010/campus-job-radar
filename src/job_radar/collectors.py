@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import calendar
 import json
 import re
 import zlib
@@ -3527,6 +3528,399 @@ class HuaweiCampusCollector(Collector):
         return jobs
 
 
+class TencentCampusCollector(Collector):
+    """Collect date-eligible graduate jobs from Tencent's public campus API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        lowered = str(text).lower()
+        compacted = "".join(lowered.split())
+        for keyword in keywords:
+            normalized = " ".join(str(keyword).lower().split())
+            if not normalized:
+                continue
+            if re.fullmatch(r"[a-z0-9+#.\- ]+", normalized):
+                pattern = (
+                    r"(?<![a-z0-9])"
+                    + re.escape(normalized).replace(r"\ ", r"\s+")
+                    + r"(?![a-z0-9])"
+                )
+                if re.search(pattern, lowered):
+                    return True
+            elif "".join(normalized.split()) in compacted:
+                return True
+        return False
+
+    @staticmethod
+    def _decode(raw: bytes, label: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("腾讯{}返回了无效 JSON".format(label)) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("status") != 0
+            or not isinstance(payload.get("message"), str)
+        ):
+            raise ValueError("腾讯{}返回失败状态".format(label))
+        return payload
+
+    @staticmethod
+    def _graduation_range(text: Any) -> tuple[datetime, datetime]:
+        normalized = " ".join(str(text or "").split())
+        match = re.search(
+            (
+                r"毕业时间[：:]\s*(20\d{2})年(\d{1,2})月"
+                r"(?:(\d{1,2})日)?\s*[-—–至到~～]+\s*"
+                r"(20\d{2})年(\d{1,2})月(?:(\d{1,2})日)?"
+            ),
+            normalized,
+        )
+        if not match:
+            raise ValueError("腾讯招聘项目毕业时间范围格式异常")
+        start_year, start_month, start_day, end_year, end_month, end_day = (
+            int(value) if value else None for value in match.groups()
+        )
+        if not 1 <= start_month <= 12 or not 1 <= end_month <= 12:
+            raise ValueError("腾讯招聘项目毕业时间范围格式异常")
+        start_day = start_day or 1
+        end_day = end_day or calendar.monthrange(end_year, end_month)[1]
+        try:
+            start = datetime(start_year, start_month, start_day)
+            end = datetime(end_year, end_month, end_day)
+        except ValueError as exc:
+            raise ValueError("腾讯招聘项目毕业时间范围格式异常") from exc
+        if start > end:
+            raise ValueError("腾讯招聘项目毕业时间范围格式异常")
+        return start, end
+
+    @staticmethod
+    def _project_ids(value: Any) -> List[int]:
+        values = [part.strip() for part in str(value or "").split(",")]
+        if not values or any(not part.isdigit() for part in values):
+            raise ValueError("腾讯招聘项目缺少有效项目 ID")
+        return [int(part) for part in values]
+
+    def _projects(self) -> tuple[List[int], Dict[int, Dict[str, Any]]]:
+        payload = self._decode(
+            fetch_bytes(
+                self.source.get(
+                    "project_url",
+                    "https://join.qq.com/api/v1/position/getProjectMapping",
+                ),
+                timeout=int(self.source.get("timeout", 40)),
+                headers={
+                    "Accept": "application/json",
+                    "Referer": self.source["homepage"],
+                },
+            ),
+            "招聘项目接口",
+        )
+        groups = payload.get("data")
+        if (
+            not isinstance(groups, list)
+            or any(not isinstance(group, dict) for group in groups)
+        ):
+            raise ValueError("腾讯招聘项目接口响应结构异常")
+
+        try:
+            target_date = datetime.strptime(
+                self.source["target_graduation_date"], "%Y-%m-%d"
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError("腾讯目标毕业日期格式异常") from exc
+        include_keywords = self.source.get(
+            "project_include_keywords", ["校园招聘", "应届生"]
+        )
+        exclude_keywords = self.source.get(
+            "project_exclude_keywords", ["实习"]
+        )
+        selected_mapping_ids = []
+        project_meta: Dict[int, Dict[str, Any]] = {}
+        for group in groups:
+            if (
+                not isinstance(group.get("status"), int)
+                or not isinstance(group.get("subProjectList"), list)
+            ):
+                raise ValueError("腾讯招聘项目接口响应结构异常")
+            if group["status"] != 1:
+                continue
+            for project in group["subProjectList"]:
+                if not isinstance(project, dict):
+                    raise ValueError("腾讯招聘项目接口响应结构异常")
+                required = (
+                    "mappingId",
+                    "projectId",
+                    "projectName",
+                    "recruitYear",
+                    "status",
+                    "recruitRangDesc",
+                )
+                if any(
+                    project.get(field) is None
+                    or not str(project.get(field, "")).strip()
+                    for field in required
+                ):
+                    raise ValueError("腾讯招聘项目缺少必要字段")
+                if not isinstance(project["mappingId"], int) or not isinstance(
+                    project["status"], int
+                ):
+                    raise ValueError("腾讯招聘项目接口响应结构异常")
+                if project["status"] != 1:
+                    continue
+
+                name = str(project["projectName"]).strip()
+                if self._contains(name, exclude_keywords):
+                    continue
+                if include_keywords and not self._contains(
+                    name, include_keywords
+                ):
+                    continue
+                start, end = self._graduation_range(
+                    project["recruitRangDesc"]
+                )
+                if not start <= target_date <= end:
+                    continue
+
+                years = list(range(start.year, end.year + 1))
+                selected_mapping_ids.append(project["mappingId"])
+                for project_id in self._project_ids(project["projectId"]):
+                    current = project_meta.setdefault(
+                        project_id,
+                        {
+                            "names": [],
+                            "graduation_years": [],
+                        },
+                    )
+                    if name not in current["names"]:
+                        current["names"].append(name)
+                    for year in years:
+                        if year not in current["graduation_years"]:
+                            current["graduation_years"].append(year)
+
+        if len(selected_mapping_ids) != len(set(selected_mapping_ids)):
+            raise ValueError("腾讯招聘项目接口返回了重复映射 ID")
+        return selected_mapping_ids, project_meta
+
+    def _page(
+        self,
+        mapping_ids: List[int],
+        page: int,
+        page_size: int,
+    ) -> tuple[int, List[Dict[str, Any]]]:
+        request_json = {
+            "projectIdList": [],
+            "projectMappingIdList": mapping_ids,
+            "keyword": "",
+            "bgList": [],
+            "workCountryType": 1,
+            "workCityList": [],
+            "recruitCityList": [],
+            "positionFidList": [],
+            "pageIndex": page,
+            "pageSize": page_size,
+        }
+        payload = self._decode(
+            fetch_bytes(
+                self.source.get(
+                    "url",
+                    "https://join.qq.com/api/v1/position/searchPosition",
+                ),
+                timeout=int(self.source.get("timeout", 40)),
+                method="POST",
+                json_body=request_json,
+                headers={
+                    "Accept": "application/json",
+                    "Referer": self.source["homepage"],
+                },
+            ),
+            "岗位搜索接口",
+        )
+        data = payload.get("data")
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("count"), int)
+            or not isinstance(data.get("positionList"), list)
+            or any(
+                not isinstance(item, dict)
+                for item in data.get("positionList", [])
+            )
+        ):
+            raise ValueError("腾讯岗位搜索接口响应结构异常")
+        total = data["count"]
+        positions = data["positionList"]
+        expected_size = min(
+            page_size, max(total - (page - 1) * page_size, 0)
+        )
+        if total < 0 or len(positions) != expected_size:
+            raise ValueError("腾讯岗位接口没有完整返回筛选结果")
+        return total, positions
+
+    def _positions(
+        self, mapping_ids: List[int]
+    ) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 100))
+        max_results = int(self.source.get("max_results", 1000))
+        if page_size <= 0 or max_results <= 0:
+            raise ValueError("腾讯岗位分页参数必须为正整数")
+        page_size = min(page_size, 1000)
+
+        positions = []
+        expected_total = None
+        page = 1
+        while expected_total is None or len(positions) < expected_total:
+            total, current = self._page(
+                mapping_ids, page, page_size
+            )
+            if total > max_results:
+                raise ValueError("腾讯岗位数量超过配置上限")
+            if expected_total is not None and total != expected_total:
+                raise ValueError("腾讯岗位接口分页总数发生变化")
+            expected_total = total
+            positions.extend(current)
+            page += 1
+
+        if expected_total is None or len(positions) != expected_total:
+            raise ValueError("腾讯岗位接口没有完整返回筛选结果")
+        ids = [
+            str(item.get("postId", "") or "").strip()
+            for item in positions
+        ]
+        if any(not external_id for external_id in ids):
+            raise ValueError("腾讯岗位缺少稳定 ID")
+        if len(ids) != len(set(ids)):
+            raise ValueError("腾讯岗位接口返回了重复 ID")
+        return positions
+
+    def _location(self, value: Any) -> str | None:
+        locations = []
+        mapping = self.source.get("location_map", {})
+        for keyword in self.source.get("location_keywords", []):
+            if self._contains(value, [keyword]):
+                location = str(mapping.get(keyword, keyword))
+                if location not in locations:
+                    locations.append(location)
+        return "/".join(locations) if locations else None
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        title: str,
+        location: str,
+        meta: Dict[str, Any],
+    ) -> JobPosting:
+        post_id = str(item["postId"]).strip()
+        detail_url = "{}?{}".format(
+            self.source.get(
+                "detail_url", "https://join.qq.com/post_detail.html"
+            ),
+            urlencode({"postid": post_id}),
+        )
+        parsed = urlsplit(detail_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "join.qq.com"
+            or not parsed.path.endswith("/post_detail.html")
+            or parse_qs(parsed.query).get("postid") != [post_id]
+        ):
+            raise ValueError("腾讯岗位详情链接结构异常")
+        description_parts = [
+            "招聘项目：{}".format("/".join(meta["names"])),
+            "岗位族：{}".format(item.get("positionFamily", ""))
+            if item.get("positionFamily")
+            else "",
+            "事业群：{}".format(item.get("bgs", ""))
+            if item.get("bgs")
+            else "",
+            "招聘标签：{}".format(item.get("recruitLabelName", "")),
+        ]
+        values = {
+            "external_id": post_id,
+            "title": title,
+            "company": self.source.get("company", "腾讯"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location,
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self.source.get("education", ""),
+            "graduation_years": meta["graduation_years"],
+            "published_at": "",
+            "deadline": self.source.get(
+                "deadline", "以官方项目页面为准"
+            ),
+            "url": detail_url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        mapping_ids, project_meta = self._projects()
+        if not mapping_ids:
+            return []
+
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        project_exclude_keywords = self.source.get(
+            "project_exclude_keywords", ["实习"]
+        )
+        jobs = []
+        for item in self._positions(mapping_ids):
+            required = (
+                "id",
+                "postId",
+                "positionTitle",
+                "projectId",
+                "projectName",
+                "recruitLabelName",
+                "workCities",
+            )
+            if any(
+                item.get(field) is None
+                or not str(item.get(field, "")).strip()
+                for field in required
+            ):
+                raise ValueError("腾讯岗位缺少必要字段")
+            try:
+                project_id = int(item["projectId"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("腾讯岗位项目 ID 格式异常") from exc
+            if project_id not in project_meta or self._contains(
+                "{} {}".format(
+                    item["projectName"], item["recruitLabelName"]
+                ),
+                project_exclude_keywords,
+            ):
+                raise ValueError("腾讯岗位接口返回了非目标招聘项目")
+
+            title = str(item["positionTitle"]).strip()
+            searchable = " ".join(
+                [
+                    title,
+                    str(item.get("positionFamily", "") or ""),
+                    str(item.get("bgs", "") or ""),
+                ]
+            )
+            if self._contains(searchable, exclude_keywords):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            location = self._location(item["workCities"])
+            if location is None:
+                continue
+            jobs.append(
+                self._to_job(
+                    item,
+                    title,
+                    location,
+                    project_meta[project_id],
+                )
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -4771,6 +5165,7 @@ COLLECTOR_TYPES = {
     "netease_game_campus": NeteaseGameCampusCollector,
     "pwc_graduate_campaign": PwcGraduateCampaignCollector,
     "shein_campus": SheinCampusCollector,
+    "tencent_campus": TencentCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
