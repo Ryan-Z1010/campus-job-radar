@@ -3176,6 +3176,357 @@ class IbmEntryLevelCollector(Collector):
         return jobs
 
 
+class HuaweiCampusCollector(Collector):
+    """Collect target-cycle overseas graduate jobs from Huawei's public API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        lowered = str(text).lower()
+        compacted = "".join(lowered.split())
+        for keyword in keywords:
+            normalized = " ".join(str(keyword).lower().split())
+            if not normalized:
+                continue
+            if re.fullmatch(r"[a-z0-9+#.\- ]+", normalized):
+                pattern = (
+                    r"(?<![a-z0-9])"
+                    + re.escape(normalized).replace(r"\ ", r"\s+")
+                    + r"(?![a-z0-9])"
+                )
+                if re.search(pattern, lowered):
+                    return True
+            elif "".join(normalized.split()) in compacted:
+                return True
+        return False
+
+    @staticmethod
+    def _date(value: Any, label: str) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("华为岗位缺少{}".format(label))
+        for date_format in (
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(text, date_format)
+            except ValueError:
+                continue
+        raise ValueError("华为岗位{}格式异常".format(label))
+
+    def _campaign_started(self) -> bool:
+        raw = fetch_bytes(
+            self.source.get(
+                "announcement_url",
+                (
+                    "https://career.huawei.com/reccampportal/"
+                    "portal5/news.html"
+                ),
+            ),
+            timeout=int(self.source.get("timeout", 40)),
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Referer": "https://career.huawei.com/",
+            },
+        )
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("华为校园招聘页返回了无效 UTF-8") from exc
+        required_text = str(
+            self.source.get("required_text", "news-bulletin-list")
+        ).strip()
+        if required_text and required_text not in body:
+            raise ValueError("华为招聘公告页缺少预期标识，可能已经改版")
+        raw_titles = re.findall(
+            r'\btitle\s*:\s*"((?:[^"\\]|\\.)*)"', body
+        )
+        if not raw_titles:
+            raise ValueError("华为招聘公告页缺少公告列表")
+        titles = []
+        for raw_title in raw_titles:
+            try:
+                titles.append(json.loads('"{}"'.format(raw_title)))
+            except json.JSONDecodeError as exc:
+                raise ValueError("华为招聘公告标题结构异常") from exc
+        launch_markers = self.source.get(
+            "launch_markers", ["华为2027届应届生招聘启动"]
+        )
+        return any(
+            self._contains(title, launch_markers) for title in titles
+        )
+
+    def _page(
+        self, page: int, page_size: int
+    ) -> tuple[int, int, List[Dict[str, Any]]]:
+        query = {
+            "jobTypes": self.source.get("job_types", "1"),
+            "jobType": self.source.get("job_type", "0"),
+            "jobFamClsCode": "",
+            "searchText": "",
+            "cityCode": "",
+            "countryCode": "",
+            "graduateItem": "",
+            "language": self.source.get("language", "zh_CN"),
+            "orderBy": "ISS_STARTDATE_DESC_AND_IS_HOT_JOB",
+        }
+        url = "{}/{}/{}?{}".format(
+            self.source["url"].rstrip("/"),
+            page_size,
+            page,
+            urlencode(query),
+        )
+        raw = fetch_bytes(
+            url,
+            timeout=int(self.source.get("timeout", 40)),
+            headers={
+                "Accept": "application/json",
+                "Referer": self.source["homepage"],
+                "x-jalor-tenantAlias": self.source.get(
+                    "tenant_alias", "hcm"
+                ),
+            },
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("华为岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("华为岗位接口响应结构异常")
+        page_vo = payload.get("pageVO")
+        positions = payload.get("result")
+        if (
+            not isinstance(page_vo, dict)
+            or not isinstance(page_vo.get("totalRows"), int)
+            or not isinstance(page_vo.get("totalPages"), int)
+            or not isinstance(page_vo.get("curPage"), int)
+            or not isinstance(positions, list)
+            or any(not isinstance(item, dict) for item in positions)
+        ):
+            raise ValueError("华为岗位接口响应结构异常")
+        total = page_vo["totalRows"]
+        total_pages = page_vo["totalPages"]
+        expected_pages = (total + page_size - 1) // page_size
+        expected_size = min(page_size, max(total - (page - 1) * page_size, 0))
+        if (
+            total < 0
+            or page_vo["curPage"] != page
+            or total_pages != expected_pages
+            or len(positions) != expected_size
+        ):
+            raise ValueError("华为岗位接口没有完整返回筛选结果")
+        return total, total_pages, positions
+
+    def _positions(self) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 50))
+        max_results = int(self.source.get("max_results", 500))
+        if page_size <= 0 or max_results <= 0:
+            raise ValueError("华为岗位分页参数必须为正整数")
+        page_size = min(page_size, 100)
+
+        positions = []
+        expected_total = None
+        expected_pages = None
+        page = 1
+        while expected_pages is None or page <= expected_pages:
+            total, total_pages, current = self._page(page, page_size)
+            if total > max_results:
+                raise ValueError("华为岗位数量超过配置上限")
+            if expected_total is not None and (
+                total != expected_total or total_pages != expected_pages
+            ):
+                raise ValueError("华为岗位接口分页总数发生变化")
+            expected_total = total
+            expected_pages = total_pages
+            positions.extend(current)
+            page += 1
+
+        if expected_total is None or len(positions) != expected_total:
+            raise ValueError("华为岗位接口没有完整返回筛选结果")
+        ids = [
+            str(item.get("advertisementCode", "") or "").strip()
+            for item in positions
+        ]
+        if any(not external_id for external_id in ids):
+            raise ValueError("华为岗位缺少稳定 ID")
+        if len(ids) != len(set(ids)):
+            raise ValueError("华为岗位接口返回了重复 ID")
+        return positions
+
+    def _location(self, item: Dict[str, Any]) -> str | None:
+        searchable = "{} {}".format(
+            item.get("jobArea", ""), item.get("jobAddress", "")
+        )
+        mapping = self.source.get("location_map", {})
+        locations = []
+        for keyword in self.source.get("location_keywords", []):
+            if self._contains(searchable, [keyword]):
+                location = str(mapping.get(keyword, keyword))
+                if location not in locations:
+                    locations.append(location)
+        return "/".join(locations) if locations else None
+
+    def _target_cycle(
+        self, title: str, published_at: datetime
+    ) -> bool:
+        start = datetime.strptime(
+            self.source["target_published_start"], "%Y-%m-%d"
+        ).date()
+        end = datetime.strptime(
+            self.source["target_published_end"], "%Y-%m-%d"
+        ).date()
+        if not start <= published_at.date() <= end:
+            return False
+        years = {
+            int(year)
+            for year in re.findall(r"(?<!\d)(20\d{2})(?!\d)", title)
+        }
+        if not years:
+            return True
+        target_years = {
+            int(year) for year in self.source.get("target_cycle_years", [])
+        }
+        return bool(years.intersection(target_years))
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        title: str,
+        location: str,
+        published_at: datetime,
+        deadline: datetime,
+    ) -> JobPosting:
+        job_id = str(item["jobId"]).strip()
+        data_source = str(item["dataSource"]).strip()
+        query = urlencode(
+            {
+                "dataSource": data_source,
+                "jobId": job_id,
+                "jobType": self.source.get("detail_job_type", "2"),
+                "recruitType": "CR",
+                "sourceType": "001",
+            }
+        )
+        detail_url = "{}?{}".format(
+            self.source.get(
+                "detail_url",
+                (
+                    "https://career.huawei.com/reccampportal/portal5/"
+                    "campus-recruitment-detail.html"
+                ),
+            ),
+            query,
+        )
+        parsed = urlsplit(detail_url)
+        detail_query = parse_qs(parsed.query)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "career.huawei.com"
+            or not parsed.path.endswith("/campus-recruitment-detail.html")
+            or detail_query.get("jobId") != [job_id]
+            or detail_query.get("dataSource") != [data_source]
+        ):
+            raise ValueError("华为岗位详情链接结构异常")
+        description_parts = [
+            "岗位族：{}".format(item.get("jobFamilyName", ""))
+            if item.get("jobFamilyName")
+            else "",
+            str(item.get("mainBusiness", "") or "").strip(),
+            str(item.get("jobRequire", "") or "").strip(),
+        ]
+        values = {
+            "external_id": str(item["advertisementCode"]).strip(),
+            "title": title,
+            "company": self.source.get("company", "华为"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location,
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get(
+                "graduation_years", [2027]
+            ),
+            "published_at": published_at.date().isoformat(),
+            "deadline": deadline.date().isoformat(),
+            "url": detail_url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        if not self._campaign_started():
+            return []
+
+        expected_job_type = str(self.source.get("job_type", "0"))
+        expected_priority = str(
+            self.source.get("student_abroad_priority", "1")
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        jobs = []
+        for item in self._positions():
+            required = (
+                "jobId",
+                "advertisementCode",
+                "jobname",
+                "jobType",
+                "studentAbroadPriority",
+                "releaseDate",
+                "expirationDate",
+                "dataSource",
+            )
+            if any(
+                item.get(field) is None
+                or not str(item.get(field, "")).strip()
+                for field in required
+            ) or not (
+                str(item.get("jobArea", "") or "").strip()
+                or str(item.get("jobAddress", "") or "").strip()
+            ):
+                raise ValueError("华为岗位缺少必要字段")
+            if (
+                str(item["jobType"]) != expected_job_type
+                or str(item["studentAbroadPriority"])
+                != expected_priority
+            ):
+                raise ValueError("华为岗位接口返回了非目标筛选条件的岗位")
+
+            title = str(item["jobname"]).strip()
+            searchable = " ".join(
+                [
+                    title,
+                    str(item.get("jobFamilyName", "") or ""),
+                    str(item.get("mainBusiness", "") or ""),
+                    str(item.get("jobRequire", "") or ""),
+                ]
+            )
+            if self._contains(searchable, exclude_keywords):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            location = self._location(item)
+            if location is None:
+                continue
+            published_at = self._date(item["releaseDate"], "发布日期")
+            if not self._target_cycle(title, published_at):
+                continue
+            deadline = self._date(item["expirationDate"], "截止日期")
+            jobs.append(
+                self._to_job(
+                    item,
+                    title,
+                    location,
+                    published_at,
+                    deadline,
+                )
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -4412,6 +4763,7 @@ COLLECTOR_TYPES = {
     "hsbc_programme": HsbcProgrammeCollector,
     "hotjob_campus": HotjobCampusCollector,
     "iguopin_company": IguopinCompanyCollector,
+    "huawei_campus": HuaweiCampusCollector,
     "ibm_entry_level": IbmEntryLevelCollector,
     "json_api": JsonApiCollector,
     "liepin_static_campus": LiepinStaticCampusCollector,
