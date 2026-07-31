@@ -21,6 +21,7 @@ from job_radar.collectors import (
     GzRecruitCompanyCollector,
     HotjobCampusCollector,
     HsbcProgrammeCollector,
+    IbmEntryLevelCollector,
     IguopinCompanyCollector,
     JsonApiCollector,
     LiepinStaticCampusCollector,
@@ -335,6 +336,267 @@ class CollectorTests(unittest.TestCase):
             AccentureEarlyCareerCollector(
                 self._accenture_source()
             ).collect()
+
+    @staticmethod
+    def _ibm_source():
+        return {
+            "id": "ibm_china",
+            "name": "IBM 中国",
+            "type": "ibm_entry_level",
+            "homepage": (
+                "https://www.ibm.com/cn-zh/careers/"
+                "career-opportunities"
+            ),
+            "search_page": "https://www.ibm.com/careers/search",
+            "url": "https://www-api.ibm.com/search/api/v2",
+            "company": "IBM 中国",
+            "company_type": "外企",
+            "app_id": "careers",
+            "scopes": ["careers2"],
+            "country_filter": "China",
+            "career_level_filter": "Entry Level",
+            "location_keywords": [
+                "Guangzhou",
+                "Shanghai",
+                "Shenzhen",
+                "Beijing",
+            ],
+            "location_map": {
+                "Guangzhou": "广州",
+                "Shanghai": "上海",
+                "Shenzhen": "深圳",
+                "Beijing": "北京",
+            },
+            "generic_location_keywords": ["Multiple Cities"],
+            "allow_generic_location": True,
+            "generic_location": "中国大陆（官网标注多城市，具体地点待核对）",
+            "include_keywords": [
+                "AI",
+                "Data",
+                "Software",
+                "Technology",
+                "Consulting",
+            ],
+            "exclude_title_keywords": [
+                "Intern",
+                "Conversion",
+                "Senior",
+                "Sales",
+            ],
+            "target_cycle_years": [2027],
+            "target_published_start": "2026-07-01",
+            "target_published_end": "2027-06-30",
+            "page_size": 100,
+            "max_results": 500,
+            "education": "入门级岗位，具体学历与毕业时间以岗位详情为准",
+            "deadline": "以官方岗位页为准",
+        }
+
+    @staticmethod
+    def _ibm_hit(**overrides):
+        source = {
+            "language": "en",
+            "url": (
+                "https://careers.ibm.com/careers/"
+                "JobDetail?jobId=CN2027AI"
+            ),
+            "dcdate": "2026-07-31",
+            "title": "2027 Entry Level AI Data Engineer",
+            "description": (
+                "Build AI-powered data products and production software."
+            ),
+            "entitled": "",
+            "field_keyword_05": "China",
+            "field_keyword_08": "Data & Analytics",
+            "field_keyword_17": "Hybrid",
+            "field_keyword_18": "Entry Level",
+            "field_keyword_19": "Guangzhou, CN",
+        }
+        source.update(overrides.pop("source_overrides", {}))
+        hit = {
+            "_index": "genesis-prod",
+            "_id": "stable-ibm-id",
+            "_score": 1,
+            "_source": source,
+        }
+        hit.update(overrides)
+        return hit
+
+    @staticmethod
+    def _ibm_payload(hits, total=None):
+        return {
+            "took": 10,
+            "timed_out": False,
+            "hits": {
+                "total": {
+                    "value": len(hits) if total is None else total,
+                    "relation": "eq",
+                },
+                "max_score": 1,
+                "hits": hits,
+            },
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ibm_filters_and_maps_target_job(self, fetch):
+        target = self._ibm_hit()
+        previous_cycle = self._ibm_hit(
+            _id="previous-cycle",
+            source_overrides={
+                "url": (
+                    "https://careers.ibm.com/careers/"
+                    "JobDetail?jobId=CN2026DATA"
+                ),
+                "title": "2026 Entry Level Data Engineer",
+                "field_keyword_19": "Shanghai, CN",
+            },
+        )
+        unrelated = self._ibm_hit(
+            _id="unrelated",
+            source_overrides={
+                "url": (
+                    "https://careers.ibm.com/careers/"
+                    "JobDetail?jobId=CN2027HR"
+                ),
+                "title": "2027 Entry Level HR Specialist",
+                "description": (
+                    "Maintain daily available human resources services."
+                ),
+                "field_keyword_08": "Enterprise Operations",
+                "field_keyword_19": "Beijing, CN",
+            },
+        )
+        internship = self._ibm_hit(
+            _id="internship",
+            source_overrides={
+                "url": (
+                    "https://careers.ibm.com/careers/"
+                    "JobDetail?jobId=CN2027INTERN"
+                ),
+                "title": "2027 Intern Conversion: Software Developer",
+                "field_keyword_19": "Shenzhen, CN",
+            },
+        )
+        other_city = self._ibm_hit(
+            _id="other-city",
+            source_overrides={
+                "url": (
+                    "https://careers.ibm.com/careers/"
+                    "JobDetail?jobId=CN2027CHENGDU"
+                ),
+                "title": "2027 Entry Level Software Developer",
+                "field_keyword_19": "Chengdu, CN",
+            },
+        )
+        fetch.return_value = json.dumps(
+            self._ibm_payload(
+                [
+                    target,
+                    previous_cycle,
+                    unrelated,
+                    internship,
+                    other_city,
+                ]
+            )
+        ).encode("utf-8")
+
+        jobs = IbmEntryLevelCollector(self._ibm_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "CN2027AI")
+        self.assertEqual(jobs[0].company, "IBM 中国")
+        self.assertEqual(jobs[0].company_type, "外企")
+        self.assertEqual(jobs[0].location, "广州")
+        self.assertEqual(jobs[0].published_at, "2026-07-31")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("Data & Analytics", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            (
+                "https://careers.ibm.com/careers/"
+                "JobDetail?jobId=CN2027AI"
+            ),
+        )
+        request = fetch.call_args.kwargs
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(
+            request["headers"]["Origin"], "https://www.ibm.com"
+        )
+        body = request["json_body"]
+        self.assertEqual(body["appId"], "careers")
+        self.assertEqual(body["scopes"], ["careers2"])
+        self.assertIn(
+            {"term": {"field_keyword_05": "China"}},
+            body["post_filter"]["bool"]["must"],
+        )
+        self.assertIn(
+            {"term": {"field_keyword_18": "Entry Level"}},
+            body["post_filter"]["bool"]["must"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ibm_accepts_recent_undated_entry_level_job(self, fetch):
+        target = self._ibm_hit(
+            source_overrides={
+                "url": (
+                    "https://careers.ibm.com/careers/"
+                    "JobDetail?jobId=CNENTRYAI"
+                ),
+                "title": "Entry Level Software Developer",
+                "field_keyword_19": "Multiple Cities",
+            }
+        )
+        fetch.return_value = json.dumps(
+            self._ibm_payload([target])
+        ).encode("utf-8")
+
+        jobs = IbmEntryLevelCollector(self._ibm_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "CNENTRYAI")
+        self.assertEqual(jobs[0].graduation_years, [])
+        self.assertIn("具体地点待核对", jobs[0].location)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ibm_empty_result_is_successful(self, fetch):
+        fetch.return_value = json.dumps(
+            self._ibm_payload([])
+        ).encode("utf-8")
+
+        self.assertEqual(
+            IbmEntryLevelCollector(self._ibm_source()).collect(),
+            [],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ibm_rejects_partial_api_result(self, fetch):
+        fetch.return_value = json.dumps(
+            self._ibm_payload([self._ibm_hit()], total=2)
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError, "没有完整返回筛选结果"
+        ):
+            IbmEntryLevelCollector(self._ibm_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ibm_rejects_unexpected_country(self, fetch):
+        fetch.return_value = json.dumps(
+            self._ibm_payload(
+                [
+                    self._ibm_hit(
+                        source_overrides={
+                            "field_keyword_05": "Taiwan",
+                        }
+                    )
+                ]
+            )
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError, "非目标筛选条件"
+        ):
+            IbmEntryLevelCollector(self._ibm_source()).collect()
 
     @staticmethod
     def _hsbc_source():
