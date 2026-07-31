@@ -2877,6 +2877,305 @@ class AccentureEarlyCareerCollector(Collector):
         return jobs
 
 
+class IbmEntryLevelCollector(Collector):
+    """Collect China entry-level jobs from IBM's public search API."""
+
+    SOURCE_FIELDS = [
+        "_id",
+        "title",
+        "url",
+        "description",
+        "language",
+        "entitled",
+        "dcdate",
+        "field_keyword_05",
+        "field_keyword_08",
+        "field_keyword_17",
+        "field_keyword_18",
+        "field_keyword_19",
+    ]
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        lowered = str(text).lower()
+        compacted = "".join(lowered.split())
+        for keyword in keywords:
+            normalized = " ".join(str(keyword).lower().split())
+            if not normalized:
+                continue
+            if re.fullmatch(r"[a-z0-9+#.\- ]+", normalized):
+                pattern = (
+                    r"(?<![a-z0-9])"
+                    + re.escape(normalized).replace(r"\ ", r"\s+")
+                    + r"(?![a-z0-9])"
+                )
+                if re.search(pattern, lowered):
+                    return True
+            elif "".join(normalized.split()) in compacted:
+                return True
+        return False
+
+    @staticmethod
+    def _published_at(value: Any) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("IBM 岗位缺少发布日期")
+        try:
+            return datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("IBM 岗位发布日期格式异常") from exc
+
+    def _request_body(self, offset: int, page_size: int) -> Dict[str, Any]:
+        country = self.source.get("country_filter", "China")
+        career_level = self.source.get(
+            "career_level_filter", "Entry Level"
+        )
+        return {
+            "appId": self.source.get("app_id", "careers"),
+            "scopes": self.source.get("scopes", ["careers2"]),
+            "query": {"bool": {"must": []}},
+            "post_filter": {
+                "bool": {
+                    "must": [
+                        {"term": {"field_keyword_05": country}},
+                        {"term": {"field_keyword_18": career_level}},
+                    ]
+                }
+            },
+            "from": offset,
+            "size": page_size,
+            "sort": [{"dcdate": "desc"}, {"_score": "desc"}],
+            "lang": self.source.get("language", "zz"),
+            "localeSelector": {},
+            "sm": {
+                "query": "",
+                "lang": self.source.get("language", "zz"),
+            },
+            "_source": self.SOURCE_FIELDS,
+        }
+
+    def _page(
+        self, offset: int, page_size: int
+    ) -> tuple[int, List[Dict[str, Any]]]:
+        raw = fetch_bytes(
+            self.source["url"],
+            timeout=int(self.source.get("timeout", 40)),
+            method="POST",
+            json_body=self._request_body(offset, page_size),
+            headers={
+                "Accept": "application/json",
+                "Origin": "https://www.ibm.com",
+                "Referer": self.source.get(
+                    "search_page", "https://www.ibm.com/careers/search"
+                ),
+            },
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("IBM 岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("timed_out") is True:
+            raise ValueError("IBM 岗位接口响应状态异常")
+        hits_block = payload.get("hits")
+        if not isinstance(hits_block, dict):
+            raise ValueError("IBM 岗位接口响应结构异常")
+        total_block = hits_block.get("total")
+        hits = hits_block.get("hits")
+        if (
+            not isinstance(total_block, dict)
+            or not isinstance(total_block.get("value"), int)
+            or total_block.get("relation") != "eq"
+            or not isinstance(hits, list)
+            or any(not isinstance(item, dict) for item in hits)
+        ):
+            raise ValueError("IBM 岗位接口响应结构异常")
+        total = total_block["value"]
+        expected = min(page_size, max(total - offset, 0))
+        if len(hits) != expected:
+            raise ValueError("IBM 岗位接口没有完整返回筛选结果")
+        return total, hits
+
+    def _positions(self) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 100))
+        max_results = int(self.source.get("max_results", 500))
+        if page_size <= 0 or max_results <= 0:
+            raise ValueError("IBM 岗位分页参数必须为正整数")
+        page_size = min(page_size, 100)
+
+        positions = []
+        total = None
+        while total is None or len(positions) < total:
+            current_total, page = self._page(len(positions), page_size)
+            if current_total < 0 or current_total > max_results:
+                raise ValueError("IBM 岗位数量超过配置上限")
+            if total is not None and current_total != total:
+                raise ValueError("IBM 岗位接口分页总数发生变化")
+            total = current_total
+            positions.extend(page)
+
+        ids = [str(item.get("_id", "") or "").strip() for item in positions]
+        if any(not external_id for external_id in ids):
+            raise ValueError("IBM 岗位缺少稳定 ID")
+        if len(ids) != len(set(ids)):
+            raise ValueError("IBM 岗位接口返回了重复 ID")
+        return positions
+
+    def _location(self, value: str) -> str | None:
+        mapping = self.source.get("location_map", {})
+        for keyword in self.source.get("location_keywords", []):
+            if self._contains(value, [keyword]):
+                return str(mapping.get(keyword, keyword))
+        generic = self.source.get(
+            "generic_location_keywords", ["Multiple Cities"]
+        )
+        if (
+            self.source.get("allow_generic_location", True)
+            and self._contains(value, generic)
+        ):
+            return self.source.get(
+                "generic_location",
+                "中国大陆（官网标注多城市，具体地点待核对）",
+            )
+        return None
+
+    def _target_cycle(
+        self, title: str, published_at: datetime
+    ) -> tuple[bool, List[int]]:
+        start = datetime.strptime(
+            self.source["target_published_start"], "%Y-%m-%d"
+        ).date()
+        end = datetime.strptime(
+            self.source["target_published_end"], "%Y-%m-%d"
+        ).date()
+        if not start <= published_at.date() <= end:
+            return False, []
+        years = {
+            int(year)
+            for year in re.findall(r"(?<!\d)(20\d{2})(?!\d)", title)
+        }
+        target_years = {
+            int(year) for year in self.source.get("target_cycle_years", [])
+        }
+        if years:
+            matched = sorted(years.intersection(target_years))
+            return bool(matched), matched
+        return True, []
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        source: Dict[str, Any],
+        location: str,
+        published_at: datetime,
+        graduation_years: List[int],
+    ) -> JobPosting:
+        detail_url = str(source["url"]).strip()
+        parsed = urlsplit(detail_url)
+        job_ids = parse_qs(parsed.query).get("jobId", [])
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "careers.ibm.com"
+            or parsed.path.rstrip("/") != "/careers/JobDetail"
+            or len(job_ids) != 1
+            or not job_ids[0].strip()
+        ):
+            raise ValueError("IBM 岗位详情链接结构异常")
+        description_parts = [
+            "职业级别：{}".format(source["field_keyword_18"]),
+            "方向：{}".format(source["field_keyword_08"]),
+            "办公方式：{}".format(source.get("field_keyword_17", ""))
+            if source.get("field_keyword_17")
+            else "",
+            str(source.get("description", "") or "").strip(),
+        ]
+        values = {
+            "external_id": job_ids[0].strip() or item["_id"],
+            "title": str(source["title"]).strip(),
+            "company": self.source.get("company", "IBM 中国"),
+            "company_type": self.source.get("company_type", "外企"),
+            "location": location,
+            "description": "；".join(
+                part for part in description_parts if part
+            ),
+            "education": self.source.get("education", ""),
+            "graduation_years": graduation_years,
+            "published_at": published_at.date().isoformat(),
+            "deadline": self.source.get("deadline", ""),
+            "url": detail_url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        expected_country = self.source.get("country_filter", "China")
+        expected_level = self.source.get(
+            "career_level_filter", "Entry Level"
+        )
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_title_keywords = self.source.get(
+            "exclude_title_keywords", []
+        )
+        jobs = []
+        for item in self._positions():
+            source = item.get("_source")
+            required = (
+                "title",
+                "url",
+                "dcdate",
+                "field_keyword_05",
+                "field_keyword_08",
+                "field_keyword_18",
+                "field_keyword_19",
+            )
+            if (
+                not isinstance(source, dict)
+                or any(
+                    not str(source.get(field, "") or "").strip()
+                    for field in required
+                )
+            ):
+                raise ValueError("IBM 岗位缺少必要字段")
+            if (
+                source["field_keyword_05"] != expected_country
+                or source["field_keyword_18"] != expected_level
+            ):
+                raise ValueError("IBM 岗位接口返回了非目标筛选条件的岗位")
+
+            title = str(source["title"]).strip()
+            if self._contains(title, exclude_title_keywords):
+                continue
+            location = self._location(str(source["field_keyword_19"]))
+            if location is None:
+                continue
+            searchable = " ".join(
+                [
+                    title,
+                    str(source.get("description", "") or ""),
+                    str(source["field_keyword_08"]),
+                ]
+            )
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            published_at = self._published_at(source["dcdate"])
+            target_cycle, graduation_years = self._target_cycle(
+                title, published_at
+            )
+            if not target_cycle:
+                continue
+            jobs.append(
+                self._to_job(
+                    item,
+                    source,
+                    location,
+                    published_at,
+                    graduation_years,
+                )
+            )
+        return jobs
+
+
 class HotjobCampusCollector(Collector):
     """Collect target-cycle jobs from a public Dayee/Hotjob campus portal."""
 
@@ -4113,6 +4412,7 @@ COLLECTOR_TYPES = {
     "hsbc_programme": HsbcProgrammeCollector,
     "hotjob_campus": HotjobCampusCollector,
     "iguopin_company": IguopinCompanyCollector,
+    "ibm_entry_level": IbmEntryLevelCollector,
     "json_api": JsonApiCollector,
     "liepin_static_campus": LiepinStaticCampusCollector,
     "moka_campus": MokaCampusCollector,
