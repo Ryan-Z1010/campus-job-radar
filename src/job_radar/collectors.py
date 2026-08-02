@@ -4331,6 +4331,83 @@ class _LinkParser(HTMLParser):
             self._parts = []
 
 
+class BydCampusCollector(Collector):
+    """Watch BYD's public fresh-graduate topic API for the target cycle."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(text.lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def collect(self) -> List[JobPosting]:
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    timeout=int(self.source.get("timeout", 20)),
+                    headers=self.source.get("headers"),
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("比亚迪校招主题接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("比亚迪校招主题接口响应结构异常")
+        if payload.get("code") != 0 or payload.get("oK") is not True:
+            raise ValueError(
+                "比亚迪校招主题接口返回失败状态（code={}）".format(
+                    payload.get("code")
+                )
+            )
+
+        topic = payload.get("data")
+        if topic is None:
+            return []
+        if not isinstance(topic, dict):
+            raise ValueError("比亚迪校招主题接口 data 结构异常")
+
+        required = ("topicCode", "topic", "zpNature")
+        if any(
+            not str(topic.get(field, "") or "").strip()
+            for field in required
+        ):
+            raise ValueError("比亚迪校招主题缺少必要字段")
+        expected_nature = str(self.source.get("expected_zp_nature", "") or "")
+        actual_nature = str(topic["zpNature"]).strip()
+        if expected_nature and actual_nature != expected_nature:
+            raise ValueError("比亚迪校招主题招聘性质与请求不一致")
+
+        searchable = "{} {}".format(
+            topic["topic"], topic.get("graduationYear", "")
+        )
+        if self._contains(searchable, self.source.get("exclude_keywords", [])):
+            return []
+        target_keywords = self.source.get("target_keywords", [])
+        if target_keywords and not self._contains(searchable, target_keywords):
+            return []
+
+        topic_code = str(topic["topicCode"]).strip()
+        values = {
+            "external_id": "{}:{}".format(self.source["id"], topic_code),
+            "title": self.source.get(
+                "title", "比亚迪{}已启动".format(str(topic["topic"]).strip())
+            ),
+            "company": self.source.get("company", "比亚迪"),
+            "company_type": self.source.get("company_type", "私企"),
+            "location": self.source.get("location", "待核对"),
+            "description": self.source.get("description", ""),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self.source.get("published_at", ""),
+            "deadline": self.source.get("deadline", ""),
+            "url": self.source.get("homepage", self.source["url"]),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return [JobPosting.from_mapping(values)]
+
+
 class CampaignWatchCollector(Collector):
     """Emit one notice when an official page announces a target campaign."""
 
@@ -5146,6 +5223,7 @@ COLLECTOR_TYPES = {
     "accenture_early_career": AccentureEarlyCareerCollector,
     "beisen_legacy_campus": BeisenLegacyCampusCollector,
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
+    "byd_campus": BydCampusCollector,
     "campaign_watch": CampaignWatchCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "cvte_campus": CvteCampusCollector,
