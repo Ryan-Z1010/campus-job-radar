@@ -2100,7 +2100,7 @@ class CollectorTests(unittest.TestCase):
     @patch.object(MokaCampusCollector, "_detail")
     @patch.object(MokaCampusCollector, "_positions")
     @patch.object(MokaCampusCollector, "_portal_data")
-    def test_moka_can_prefilter_titles_before_fetching_details(
+    def test_moka_can_use_complete_list_items_and_prefilter_titles(
         self,
         portal,
         positions,
@@ -2108,30 +2108,26 @@ class CollectorTests(unittest.TestCase):
     ):
         portal.return_value = {"aesIv": "de7c21ed8d6f50fe"}
         positions.return_value = [
-            {"id": "ai-1", "title": "AI 算法工程师（深圳）"},
+            {
+                "id": "ai-1",
+                "orgId": "vipshophr",
+                "status": "open",
+                "title": "AI 算法工程师（深圳）",
+                "commitment": "全职",
+                "locations": [{"name": "深圳市"}],
+                "jobDescription": "负责人工智能算法研发。",
+            },
             {"id": "sales-1", "title": "渠道销售（深圳）"},
         ]
-        detail.return_value = {
-            "id": "ai-1",
-            "orgId": "vipshophr",
-            "status": "open",
-            "title": "AI 算法工程师（深圳）",
-            "commitment": "全职",
-            "locations": [{"name": "深圳市"}],
-            "jobDescription": "负责人工智能算法研发。",
-        }
         source = self._moka_source()
         source.pop("target_cycle_keywords")
         source["prefilter_title_keywords"] = ["AI", "数据", "软件"]
+        source["details_in_list"] = True
 
         jobs = MokaCampusCollector(source).collect()
 
         self.assertEqual([job.external_id for job in jobs], ["ai-1"])
-        detail.assert_called_once()
-        self.assertEqual(
-            detail.call_args.args[1:],
-            ("de7c21ed8d6f50fe", "ai-1"),
-        )
+        detail.assert_not_called()
 
     @staticmethod
     def _cvte_source():

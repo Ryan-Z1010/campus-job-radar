@@ -1910,11 +1910,14 @@ class MokaCampusCollector(Collector):
                 continue
 
             external_id = str(item["id"]).strip()
-            detail = self._detail(
-                opener,
-                portal_data["aesIv"],
-                external_id,
-            )
+            if self.source.get("details_in_list"):
+                detail = item
+            else:
+                detail = self._detail(
+                    opener,
+                    portal_data["aesIv"],
+                    external_id,
+                )
             if (
                 str(detail.get("id", "") or "").strip() != external_id
                 or str(detail.get("orgId", "") or "").strip()
