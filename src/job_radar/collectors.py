@@ -1617,6 +1617,16 @@ class MokaCampusCollector(Collector):
         aes_iv = payload.get("aesIv")
         if not isinstance(aes_iv, str) or len(aes_iv.encode("utf-8")) != 16:
             raise ValueError("Moka校招门户缺少有效公开解码参数")
+        required_keywords = self.source.get("portal_required_keywords", [])
+        if required_keywords:
+            portal_text = json.dumps(payload, ensure_ascii=False)
+            missing_keywords = [
+                keyword
+                for keyword in required_keywords
+                if not self._contains(portal_text, [keyword])
+            ]
+            if missing_keywords:
+                raise ValueError("Moka校招门户未匹配目标招聘届别")
         return payload
 
     @staticmethod
@@ -1684,7 +1694,9 @@ class MokaCampusCollector(Collector):
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Origin": "https://app-tc.mokahr.com",
+                "Origin": self.source.get(
+                    "origin", "https://app-tc.mokahr.com"
+                ),
                 "Referer": self.source["homepage"],
             },
             method="POST",
@@ -1871,6 +1883,9 @@ class MokaCampusCollector(Collector):
         exclude_title_keywords = self.source.get(
             "exclude_title_keywords", []
         )
+        prefilter_title_keywords = self.source.get(
+            "prefilter_title_keywords", []
+        )
         include_keywords = self.source.get("include_keywords", [])
         exclude_keywords = self.source.get("exclude_keywords", [])
         exclude_commitments = set(
@@ -1888,6 +1903,10 @@ class MokaCampusCollector(Collector):
             ):
                 continue
             if self._contains(title, exclude_title_keywords):
+                continue
+            if prefilter_title_keywords and not self._contains(
+                title, prefilter_title_keywords
+            ):
                 continue
 
             external_id = str(item["id"]).strip()

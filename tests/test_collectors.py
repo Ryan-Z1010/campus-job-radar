@@ -1,9 +1,10 @@
 import base64
+import html
 import json
 import unittest
 import zlib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -1953,6 +1954,60 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(data["jobStats"]["total"], 0)
         self.assertEqual(data["jobs"], [])
 
+    @patch("job_radar.collectors.urlopen_with_retry")
+    def test_moka_uses_configured_origin_for_custom_portal(self, request_url):
+        response = request_url.return_value.__enter__.return_value
+        response.read.return_value = json.dumps(
+            {
+                "code": 0,
+                "data": {"jobs": [], "jobStats": {"total": 0}},
+                "success": True,
+            }
+        ).encode("utf-8")
+        source = self._moka_source()
+        source["origin"] = "https://apply.careers.dji.com"
+
+        MokaCampusCollector(source)._post(
+            MagicMock(),
+            source["url"],
+            {"orgId": source["org_id"]},
+            "de7c21ed8d6f50fe",
+            "岗位列表",
+        )
+
+        request = request_url.call_args.args[0]
+        self.assertEqual(
+            request.get_header("Origin"),
+            "https://apply.careers.dji.com",
+        )
+
+    @patch("job_radar.collectors.urlopen_with_retry")
+    def test_moka_rejects_portal_without_required_cycle(self, request_url):
+        source = self._moka_source()
+        source["portal_required_keywords"] = ["2027拓疆者校园招聘"]
+        init_data = {
+            "org": {
+                "id": source["org_id"],
+                "name": source["company"],
+            },
+            "siteId": source["site_id"],
+            "mode": "campus",
+            "aesIv": "de7c21ed8d6f50fe",
+            "pages": [{"title": "2026校园招聘"}],
+        }
+        response = request_url.return_value.__enter__.return_value
+        response.read.return_value = (
+            '<input id="init-data" value="{}">'.format(
+                html.escape(
+                    json.dumps(init_data, ensure_ascii=False),
+                    quote=True,
+                )
+            )
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "未匹配目标招聘届别"):
+            MokaCampusCollector(source)._portal_data(MagicMock())
+
     @patch.object(MokaCampusCollector, "_detail")
     @patch.object(MokaCampusCollector, "_positions")
     @patch.object(MokaCampusCollector, "_portal_data")
@@ -2041,6 +2096,42 @@ class CollectorTests(unittest.TestCase):
 
         self.assertEqual(jobs, [])
         detail.assert_not_called()
+
+    @patch.object(MokaCampusCollector, "_detail")
+    @patch.object(MokaCampusCollector, "_positions")
+    @patch.object(MokaCampusCollector, "_portal_data")
+    def test_moka_can_prefilter_titles_before_fetching_details(
+        self,
+        portal,
+        positions,
+        detail,
+    ):
+        portal.return_value = {"aesIv": "de7c21ed8d6f50fe"}
+        positions.return_value = [
+            {"id": "ai-1", "title": "AI 算法工程师（深圳）"},
+            {"id": "sales-1", "title": "渠道销售（深圳）"},
+        ]
+        detail.return_value = {
+            "id": "ai-1",
+            "orgId": "vipshophr",
+            "status": "open",
+            "title": "AI 算法工程师（深圳）",
+            "commitment": "全职",
+            "locations": [{"name": "深圳市"}],
+            "jobDescription": "负责人工智能算法研发。",
+        }
+        source = self._moka_source()
+        source.pop("target_cycle_keywords")
+        source["prefilter_title_keywords"] = ["AI", "数据", "软件"]
+
+        jobs = MokaCampusCollector(source).collect()
+
+        self.assertEqual([job.external_id for job in jobs], ["ai-1"])
+        detail.assert_called_once()
+        self.assertEqual(
+            detail.call_args.args[1:],
+            ("de7c21ed8d6f50fe", "ai-1"),
+        )
 
     @staticmethod
     def _cvte_source():
