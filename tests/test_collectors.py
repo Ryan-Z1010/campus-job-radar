@@ -12,6 +12,7 @@ from job_radar.collectors import (
     AccentureEarlyCareerCollector,
     BeisenLegacyCampusCollector,
     BeisenPortalCampaignCollector,
+    BydCampusCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
     CvteCampusCollector,
@@ -38,6 +39,101 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _byd_source():
+        return {
+            "id": "byd_china",
+            "name": "比亚迪",
+            "type": "byd_campus",
+            "homepage": "https://job.byd.com/portal/mobile/school-home",
+            "url": "https://job.byd.com/portal/api/portal-api/resumeSend/"
+            "school-topic/info?zpNature=008501&topicType=yingjs_zp",
+            "company": "比亚迪",
+            "company_type": "私企",
+            "expected_zp_nature": "008501",
+            "target_keywords": ["27届", "2027届"],
+            "exclude_keywords": ["实习", "博士"],
+            "title": "比亚迪2027届正式校园招聘已启动",
+            "location": "深圳/上海/北京/广州",
+            "description": "请核对AI、数据与软件岗位。",
+            "education": "应届毕业生，具体要求以官网为准",
+            "graduation_years": [2027],
+            "deadline": "以官网为准",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_byd_returns_empty_before_target_topic_launch(self, fetch):
+        fetch.return_value = json.dumps(
+            {"code": 0, "data": None, "msg": "操作成功", "oK": True}
+        ).encode("utf-8")
+
+        jobs = BydCampusCollector(self._byd_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_byd_maps_target_fresh_graduate_topic(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "topicCode": "BYD2027CAMPUS",
+                    "topic": "比亚迪2027届校园招聘",
+                    "graduationYear": "2027届",
+                    "zpNature": "008501",
+                },
+                "msg": "操作成功",
+                "oK": True,
+            }
+        ).encode("utf-8")
+
+        jobs = BydCampusCollector(self._byd_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "byd_china:BYD2027CAMPUS")
+        self.assertEqual(jobs[0].company, "比亚迪")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url, "https://job.byd.com/portal/mobile/school-home"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_byd_ignores_previous_or_intern_topic(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": 0,
+                "data": {
+                    "topicCode": "BYD2026INTERN",
+                    "topic": "比亚迪2026届实习生招聘",
+                    "graduationYear": "2026届",
+                    "zpNature": "008501",
+                },
+                "oK": True,
+            }
+        ).encode("utf-8")
+
+        self.assertEqual(BydCampusCollector(self._byd_source()).collect(), [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_byd_rejects_invalid_json(self, fetch):
+        fetch.return_value = b"not-json"
+
+        with self.assertRaisesRegex(ValueError, "无效 JSON"):
+            BydCampusCollector(self._byd_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_byd_rejects_changed_topic_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {
+                "code": 0,
+                "data": {"topic": "比亚迪2027届校园招聘"},
+                "oK": True,
+            }
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少必要字段"):
+            BydCampusCollector(self._byd_source()).collect()
+
     @staticmethod
     def _pwc_source():
         return {
