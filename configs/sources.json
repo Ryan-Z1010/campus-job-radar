@@ -2498,6 +2498,75 @@
       "graduation_years": [2027],
       "deadline": "以官方公告及岗位为准",
       "note": "中兴通讯普通应届生官网当前仍明确显示2026届，因此使用活动监控等待页面出现2027届普通校园招聘标识；未更新时正常返回0条，不把未来领军、实习生或上一届普通岗位误报为2027届普通秋招。"
+    },
+    {
+      "id": "pingan_fresh_graduate_2027",
+      "name": "中国平安2027正式应届生",
+      "type": "pingan_campus",
+      "enabled": true,
+      "homepage": "https://campus.pingan.com/freshGraduates",
+      "official_config_url": "https://campus.pingan.com/zztj-recruit-talent-webserver/rctt/candidate/officialWebsite/queryOfficialIdByUrl",
+      "positions_url": "https://campus.pingan.com/zztj-recruit-talent-webserver/rctt/candidate/position/campus/positionSearch/queryPositionPage",
+      "detail_url_template": "https://campus.pingan.com{official_path}/positionDetail?positionId={position_id}",
+      "official_units": [
+        {
+          "official_url": "",
+          "business_unit_id": "PA000"
+        },
+        {
+          "official_url": "tech",
+          "business_unit_id": "PA011"
+        }
+      ],
+      "recruit_type": "3",
+      "position_type": "1",
+      "company": "中国平安",
+      "company_type": "私企",
+      "location": "工作地点以岗位页面为准",
+      "location_keywords": ["广州", "上海", "深圳", "北京"],
+      "include_keywords": [
+        "AI",
+        "人工智能",
+        "智能体",
+        "Agent",
+        "大模型",
+        "LLM",
+        "算法",
+        "机器学习",
+        "深度学习",
+        "数据",
+        "数仓",
+        "数据库",
+        "软件",
+        "开发",
+        "后端",
+        "前端",
+        "测试",
+        "云计算",
+        "信息安全",
+        "网络安全",
+        "数字化",
+        "金融科技"
+      ],
+      "exclude_keywords": [
+        "实习",
+        "兼职",
+        "营销",
+        "销售",
+        "客户经理",
+        "保险代理",
+        "人力资源",
+        "财务",
+        "法务",
+        "审计",
+        "行政"
+      ],
+      "page_size": 50,
+      "max_pages": 20,
+      "graduation_years": [2027],
+      "education": "2027届正式应届生；学历、专业及海外毕业时间窗口以具体岗位为准",
+      "deadline": "以官方岗位页面为准",
+      "note": "已接入中国平安统一校园招聘官网及平安科技子站的公开配置和岗位接口。每次运行先动态发现平安集团PA000与平安科技PA011当前招聘活动ID，再只请求positionType=1的正式应届生岗位，完整核对分页总数与稳定岗位ID；随后保留广州、上海、深圳、北京的AI、算法、数据、软件开发、测试、云计算、信息安全、数字化和金融科技方向，并排除实习、营销、销售及非目标职能。2026-08-03实时核验时，集团应届生页面明确显示本期招聘已结束，平安科技子站也无发布中的正式岗位，两个正式岗位接口均返回data=null，因此当前正常保持静默，不把2027届暑期实习误报为正式秋招。"
     }
   ]
 }

@@ -31,6 +31,7 @@ from job_radar.collectors import (
     MokaCampusCollector,
     NeteaseGameCampusCollector,
     NoticeJsonCollector,
+    PinganCampusCollector,
     PwcGraduateCampaignCollector,
     SheinCampusCollector,
     TencentCampusCollector,
@@ -40,6 +41,180 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @staticmethod
+    def _pingan_source():
+        return {
+            "id": "pingan_fresh_graduate",
+            "name": "中国平安正式应届生",
+            "type": "pingan_campus",
+            "official_config_url": "https://campus.pingan.com/api/config",
+            "positions_url": "https://campus.pingan.com/api/positions",
+            "detail_url_template": (
+                "https://campus.pingan.com{official_path}/positionDetail"
+                "?positionId={position_id}"
+            ),
+            "official_units": [
+                {"official_url": "", "business_unit_id": "PA000"}
+            ],
+            "position_type": "1",
+            "company": "中国平安",
+            "company_type": "私企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "人工智能", "算法", "数据", "软件"],
+            "exclude_keywords": ["实习", "营销", "销售"],
+            "page_size": 2,
+            "max_pages": 3,
+            "education": "正式应届生，具体要求以官网为准",
+            "graduation_years": [2027],
+            "deadline": "以官方岗位页面为准",
+        }
+
+    @staticmethod
+    def _pingan_config(unit_id="PA000", wecruit_id="PINGAN2027"):
+        return json.dumps(
+            {
+                "responseCode": "10001",
+                "responseMsg": "请求成功",
+                "data": {
+                    "wecruitId": wecruit_id,
+                    "businessUnitId": unit_id,
+                    "businessUnitName": "平安集团",
+                    "hasAvalibleWebsiteModel": "Y",
+                },
+            }
+        ).encode("utf-8")
+
+    @staticmethod
+    def _pingan_page(page_no, total_count, total_page, items):
+        return json.dumps(
+            {
+                "responseCode": "10001",
+                "responseMsg": "请求成功",
+                "data": {
+                    "list": items,
+                    "pageNo": page_no,
+                    "pageSize": 2,
+                    "totalCount": total_count,
+                    "totalPage": total_page,
+                },
+            }
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pingan_returns_empty_before_formal_campaign_launch(self, fetch):
+        fetch.side_effect = [
+            self._pingan_config(),
+            json.dumps(
+                {
+                    "responseCode": "10001",
+                    "responseMsg": "请求成功",
+                    "data": None,
+                }
+            ).encode("utf-8"),
+        ]
+
+        jobs = PinganCampusCollector(self._pingan_source()).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["json_body"]["positionType"], "1"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pingan_paginates_and_filters_target_roles(self, fetch):
+        fetch.side_effect = [
+            self._pingan_config(),
+            self._pingan_page(
+                1,
+                4,
+                2,
+                [
+                    {
+                        "idPosition": "ai-1",
+                        "positionName": "AI算法工程师",
+                        "positionCategoryName": "科技类",
+                        "businessUnitName": "平安科技",
+                        "deptShowName": "人工智能中心",
+                        "workCity": "深圳市,上海市",
+                        "positionType": "1",
+                    },
+                    {
+                        "idPosition": "sales-1",
+                        "positionName": "营销管培生",
+                        "positionCategoryName": "业务类",
+                        "businessUnitName": "平安产险",
+                        "workCity": "广州市",
+                        "positionType": "1",
+                    },
+                ],
+            ),
+            self._pingan_page(
+                2,
+                4,
+                2,
+                [
+                    {
+                        "idPosition": "data-1",
+                        "positionName": "数据产品经理",
+                        "positionCategoryName": "产品类",
+                        "businessUnitName": "平安集团",
+                        "workCity": "北京市",
+                        "positionType": "1",
+                    },
+                    {
+                        "idPosition": "software-1",
+                        "positionName": "软件开发工程师",
+                        "positionCategoryName": "科技类",
+                        "businessUnitName": "平安科技",
+                        "workCity": "南京市",
+                        "positionType": "1",
+                    },
+                ],
+            ),
+        ]
+
+        jobs = PinganCampusCollector(self._pingan_source()).collect()
+
+        self.assertEqual([job.external_id for job in jobs], ["ai-1", "data-1"])
+        self.assertEqual(jobs[0].company, "平安科技")
+        self.assertEqual(jobs[0].location, "深圳市、上海市")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(
+            jobs[0].url,
+            "https://campus.pingan.com/positionDetail?positionId=ai-1",
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pingan_rejects_non_target_official_unit(self, fetch):
+        fetch.return_value = self._pingan_config(unit_id="PA003")
+
+        with self.assertRaisesRegex(ValueError, "非目标监控单位"):
+            PinganCampusCollector(self._pingan_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_pingan_rejects_internship_in_formal_api(self, fetch):
+        fetch.side_effect = [
+            self._pingan_config(),
+            self._pingan_page(
+                1,
+                1,
+                1,
+                [
+                    {
+                        "idPosition": "intern-1",
+                        "positionName": "AI实习生",
+                        "positionCategoryName": "科技类",
+                        "businessUnitName": "平安科技",
+                        "workCity": "深圳市",
+                        "positionType": "2",
+                    }
+                ],
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "非正式应届生岗位"):
+            PinganCampusCollector(self._pingan_source()).collect()
+
     @staticmethod
     def _byd_source():
         return {

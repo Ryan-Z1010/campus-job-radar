@@ -4467,6 +4467,228 @@ class BydCampusCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class PinganCampusCollector(Collector):
+    """Collect formal graduate roles from Ping An's public campus API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _request_json(
+        self,
+        url: str,
+        request_json: Dict[str, Any],
+        label: str,
+    ) -> Any:
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    url,
+                    timeout=int(self.source.get("timeout", 20)),
+                    method="POST",
+                    json_body=request_json,
+                    headers={"Accept": "application/json;charset=utf-8"},
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("{}返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("{}响应结构异常".format(label))
+        if str(payload.get("responseCode", "")) != "10001":
+            raise ValueError(
+                "{}返回失败状态（responseCode={}）".format(
+                    label, payload.get("responseCode")
+                )
+            )
+        return payload.get("data")
+
+    def _official_configs(self) -> List[Dict[str, Any]]:
+        official_units = self.source.get("official_units", [])
+        if not isinstance(official_units, list) or not official_units:
+            raise ValueError("中国平安校招来源未配置监控单位")
+
+        configs = []
+        seen_wecruit_ids = set()
+        for unit in official_units:
+            if not isinstance(unit, dict):
+                raise ValueError("中国平安校招监控单位配置异常")
+            official_url = str(unit.get("official_url", "") or "").strip()
+            data = self._request_json(
+                self.source["official_config_url"],
+                {
+                    "officialUrl": official_url,
+                    "recruitType": str(self.source.get("recruit_type", "3")),
+                },
+                "中国平安校招官网配置接口",
+            )
+            if not isinstance(data, dict):
+                raise ValueError("中国平安校招官网配置 data 结构异常")
+
+            required = ("wecruitId", "businessUnitId", "businessUnitName")
+            if any(not str(data.get(field, "") or "").strip() for field in required):
+                raise ValueError("中国平安校招官网配置缺少必要字段")
+            expected_unit_id = str(unit.get("business_unit_id", "") or "")
+            actual_unit_id = str(data["businessUnitId"]).strip()
+            if expected_unit_id and actual_unit_id != expected_unit_id:
+                raise ValueError("中国平安校招官网返回了非目标监控单位")
+            if str(data.get("hasAvalibleWebsiteModel", "")) != "Y":
+                raise ValueError("中国平安目标校招官网当前未发布")
+
+            wecruit_id = str(data["wecruitId"]).strip()
+            if wecruit_id in seen_wecruit_ids:
+                raise ValueError("中国平安校招官网返回了重复招聘活动 ID")
+            seen_wecruit_ids.add(wecruit_id)
+            configs.append(
+                {
+                    "official_url": official_url,
+                    "wecruit_id": wecruit_id,
+                    "business_unit_id": actual_unit_id,
+                    "business_unit_name": str(data["businessUnitName"]).strip(),
+                }
+            )
+        return configs
+
+    def _positions(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        page_size = int(self.source.get("page_size", 50))
+        max_pages = int(self.source.get("max_pages", 20))
+        positions = []
+        seen_ids = set()
+        expected_total = None
+        total_pages = None
+
+        for page_no in range(1, max_pages + 1):
+            data = self._request_json(
+                self.source["positions_url"],
+                {
+                    "PageNum": page_no,
+                    "businessUnitId": "",
+                    "keyWord": "",
+                    "pageSize": page_size,
+                    "positionCategoryId": "",
+                    "wecruitId": config["wecruit_id"],
+                    "positionType": str(
+                        self.source.get("position_type", "1")
+                    ),
+                    "wecruitPlatform": True,
+                    "workCity": "",
+                    "interviewCity": "",
+                },
+                "中国平安校招岗位接口",
+            )
+            if data is None:
+                return []
+            if not isinstance(data, dict) or not isinstance(data.get("list"), list):
+                raise ValueError("中国平安校招岗位 data 结构异常")
+            try:
+                current_page = int(data["pageNo"])
+                current_total = int(data["totalCount"])
+                current_total_pages = int(data["totalPage"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("中国平安校招岗位分页字段异常") from exc
+            if current_page != page_no:
+                raise ValueError("中国平安校招岗位分页页码异常")
+            if expected_total is None:
+                expected_total = current_total
+                total_pages = current_total_pages
+                if total_pages > max_pages:
+                    raise ValueError("中国平安校招岗位分页超过安全上限")
+            elif current_total != expected_total or current_total_pages != total_pages:
+                raise ValueError("中国平安校招岗位分页总数发生变化")
+
+            for item in data["list"]:
+                if not isinstance(item, dict):
+                    raise ValueError("中国平安校招岗位列表项结构异常")
+                position_id = str(item.get("idPosition", "") or "").strip()
+                if not position_id:
+                    raise ValueError("中国平安校招岗位缺少稳定 ID")
+                if position_id in seen_ids:
+                    raise ValueError("中国平安校招岗位分页返回重复 ID")
+                seen_ids.add(position_id)
+                positions.append(item)
+
+            if page_no >= total_pages:
+                break
+
+        if expected_total is None or len(positions) != expected_total:
+            raise ValueError("中国平安校招岗位分页数量不完整")
+        return positions
+
+    def _job(
+        self,
+        item: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> JobPosting | None:
+        position_id = str(item.get("idPosition", "") or "").strip()
+        title = str(item.get("positionName", "") or "").strip()
+        location = str(item.get("workCity", "") or "").strip()
+        if not title or not location:
+            raise ValueError("中国平安校招岗位缺少标题或工作城市")
+
+        item_position_type = str(item.get("positionType", "") or "").strip()
+        expected_type = str(self.source.get("position_type", "1"))
+        if item_position_type and item_position_type != expected_type:
+            raise ValueError("中国平安校招岗位接口返回了非正式应届生岗位")
+
+        company = str(
+            item.get("businessUnitName")
+            or config["business_unit_name"]
+            or self.source.get("company", "中国平安")
+        ).strip()
+        department = str(
+            item.get("deptShowName") or item.get("deptName") or ""
+        ).strip()
+        category = str(item.get("positionCategoryName", "") or "").strip()
+        searchable = " ".join((title, company, department, category))
+        if self._contains(searchable, self.source.get("exclude_keywords", [])):
+            return None
+        include_keywords = self.source.get("include_keywords", [])
+        if include_keywords and not self._contains(searchable, include_keywords):
+            return None
+        if not self._contains(location, self.source.get("location_keywords", [])):
+            return None
+
+        description_parts = [part for part in (category, company, department) if part]
+        official_url = config["official_url"]
+        official_path = "/{}".format(official_url) if official_url else ""
+        url = self.source["detail_url_template"].format(
+            official_path=official_path,
+            position_id=quote(position_id),
+        )
+        values = {
+            "external_id": position_id,
+            "title": title,
+            "company": company,
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location.replace(",", "、"),
+            "description": " / ".join(description_parts),
+            "education": self.source.get("education", ""),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": item.get("createdDate", ""),
+            "deadline": item.get("deadline") or self.source.get("deadline", ""),
+            "url": url,
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        jobs = []
+        seen_ids = set()
+        for config in self._official_configs():
+            for item in self._positions(config):
+                position_id = str(item.get("idPosition", "") or "").strip()
+                if position_id in seen_ids:
+                    continue
+                seen_ids.add(position_id)
+                job = self._job(item, config)
+                if job is not None:
+                    jobs.append(job)
+        return jobs
+
+
 class CampaignWatchCollector(Collector):
     """Emit one notice when an official page announces a target campaign."""
 
@@ -5300,6 +5522,7 @@ COLLECTOR_TYPES = {
     "liepin_static_campus": LiepinStaticCampusCollector,
     "moka_campus": MokaCampusCollector,
     "netease_game_campus": NeteaseGameCampusCollector,
+    "pingan_campus": PinganCampusCollector,
     "pwc_graduate_campaign": PwcGraduateCampaignCollector,
     "shein_campus": SheinCampusCollector,
     "tencent_campus": TencentCampusCollector,
