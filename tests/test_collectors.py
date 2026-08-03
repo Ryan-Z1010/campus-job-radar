@@ -2008,6 +2008,38 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未匹配目标招聘届别"):
             MokaCampusCollector(source)._portal_data(MagicMock())
 
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_moka_rejects_campaign_page_without_required_cycle(self, fetch):
+        fetch.return_value = (
+            "<title>中兴通讯2026届未来领军人才招聘</title>"
+        ).encode("utf-8")
+        source = self._moka_source()
+        source["campaign_url"] = "https://example.com/campus-news"
+        source["campaign_required_keywords"] = [
+            "中兴通讯2027届未来领军人才招聘正式启动"
+        ]
+
+        with self.assertRaisesRegex(ValueError, "未匹配目标招聘届别"):
+            MokaCampusCollector(source)._validate_campaign()
+
+        fetch.assert_called_once_with(
+            source["campaign_url"],
+            timeout=20,
+        )
+
+    def test_moka_maps_configured_city_ids(self):
+        source = self._moka_source()
+        source["city_id_map"] = {
+            "440100": "广州市",
+            "440300": "深圳市",
+        }
+
+        location = MokaCampusCollector(source)._locations(
+            [{"cityId": 440100}, {"cityId": 440300}]
+        )
+
+        self.assertEqual(location, "广州市、深圳市")
+
     @patch.object(MokaCampusCollector, "_detail")
     @patch.object(MokaCampusCollector, "_positions")
     @patch.object(MokaCampusCollector, "_portal_data")
@@ -2116,6 +2148,7 @@ class CollectorTests(unittest.TestCase):
                 "commitment": "全职",
                 "locations": [{"name": "深圳市"}],
                 "jobDescription": "负责人工智能算法研发。",
+                "projectFolder": {"id": 100120257, "name": "未来领军"},
             },
             {"id": "sales-1", "title": "渠道销售（深圳）"},
         ]
@@ -2123,6 +2156,7 @@ class CollectorTests(unittest.TestCase):
         source.pop("target_cycle_keywords")
         source["prefilter_title_keywords"] = ["AI", "数据", "软件"]
         source["details_in_list"] = True
+        source["target_project_ids"] = [100120257]
 
         jobs = MokaCampusCollector(source).collect()
 
