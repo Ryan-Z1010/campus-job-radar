@@ -1629,6 +1629,25 @@ class MokaCampusCollector(Collector):
                 raise ValueError("Moka校招门户未匹配目标招聘届别")
         return payload
 
+    def _validate_campaign(self) -> None:
+        campaign_url = self.source.get("campaign_url")
+        if not campaign_url:
+            return
+        body = fetch_bytes(
+            campaign_url,
+            timeout=int(self.source.get("campaign_timeout", 20)),
+        ).decode("utf-8", errors="replace")
+        required_keywords = self.source.get(
+            "campaign_required_keywords", []
+        )
+        missing_keywords = [
+            keyword
+            for keyword in required_keywords
+            if not self._contains(body, [keyword])
+        ]
+        if missing_keywords:
+            raise ValueError("Moka校招活动页未匹配目标招聘届别")
+
     @staticmethod
     def _decode_api_payload(raw: bytes, aes_iv: str, label: str) -> Dict[str, Any]:
         try:
@@ -1792,10 +1811,13 @@ class MokaCampusCollector(Collector):
             "岗位详情",
         )
 
-    @staticmethod
-    def _locations(value: Any) -> str:
+    def _locations(self, value: Any) -> str:
         if not isinstance(value, list):
             raise ValueError("Moka岗位工作地点结构异常")
+        city_id_map = {
+            str(city_id): str(name)
+            for city_id, name in self.source.get("city_id_map", {}).items()
+        }
         names = []
         for item in value:
             if isinstance(item, str):
@@ -1805,6 +1827,8 @@ class MokaCampusCollector(Collector):
                     item.get("name")
                     or item.get("cityName")
                     or item.get("label")
+                    or city_id_map.get(str(item.get("cityId", "")))
+                    or item.get("address")
                     or ""
                 ).strip()
             else:
@@ -1874,6 +1898,7 @@ class MokaCampusCollector(Collector):
         return JobPosting.from_mapping(values)
 
     def collect(self) -> List[JobPosting]:
+        self._validate_campaign()
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
         portal_data = self._portal_data(opener)
         positions = self._positions(opener, portal_data["aesIv"])
@@ -1892,6 +1917,10 @@ class MokaCampusCollector(Collector):
             self.source.get("exclude_commitments", [])
         )
         location_keywords = self.source.get("location_keywords", [])
+        target_project_ids = {
+            str(project_id)
+            for project_id in self.source.get("target_project_ids", [])
+        }
 
         jobs = []
         for item in positions:
@@ -1925,6 +1954,14 @@ class MokaCampusCollector(Collector):
                 or str(detail.get("status", "") or "").strip() != "open"
             ):
                 raise ValueError("Moka岗位详情返回了非目标在招岗位")
+            if target_project_ids:
+                project = detail.get("projectFolder")
+                if (
+                    not isinstance(project, dict)
+                    or str(project.get("id", "") or "")
+                    not in target_project_ids
+                ):
+                    raise ValueError("Moka岗位详情返回了非目标招聘项目")
             commitment = str(
                 detail.get("commitment", "") or ""
             ).strip()
