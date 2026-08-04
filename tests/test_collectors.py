@@ -16,6 +16,7 @@ from job_radar.collectors import (
     BydCampusCollector,
     CampaignWatchCollector,
     ChinaSouthernPowerGridCollector,
+    CmbCampusCollector,
     CvteCampusCollector,
     GdrcGroupCollector,
     GdutCampusNoticeCollector,
@@ -214,6 +215,241 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "非正式应届生岗位"):
             PinganCampusCollector(self._pingan_source()).collect()
+
+    @staticmethod
+    def _cmb_source():
+        return {
+            "id": "cmb_graduate_2027",
+            "name": "招商银行2027届应届生",
+            "type": "cmb_campus",
+            "homepage": "https://career.cmbchina.com/campus/home",
+            "recruiting_info_url": "https://career.cmbchina.com/api/info",
+            "positions_url": "https://career.cmbchina.com/api/positions",
+            "detail_api_url": "https://career.cmbchina.com/api/detail",
+            "detail_url_template": (
+                "https://career.cmbchina.com/positionDetail/school"
+                "?publishId={publish_id}"
+            ),
+            "recruitment_type_id": (
+                "96574F8D-C7ED-4772-AE7C-BAC896D190C1"
+            ),
+            "company_type": "私企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "人工智能", "算法", "数据", "开发"],
+            "exclude_keywords": ["实习", "营销", "销售"],
+            "target_campaign_keywords": ["2027", "2027届"],
+            "page_size": 2,
+            "max_pages": 3,
+            "education": "本科及以上，具体以岗位详情为准",
+            "graduation_years": [2027],
+        }
+
+    @staticmethod
+    def _cmb_payload(body):
+        return json.dumps(
+            {"returnCode": "SUC0000", "errorMsg": None, "body": body}
+        ).encode("utf-8")
+
+    @classmethod
+    def _cmb_info(cls, organizations=None, cities=None):
+        return cls._cmb_payload(
+            {
+                "recruitingOrgList": organizations
+                if organizations is not None
+                else [
+                    {
+                        "orgId": "108116",
+                        "orgName": "招银网络科技",
+                        "recruitingJobCount": 3,
+                        "recruitingCityIdList": ["shenzhen", "shanghai"],
+                    }
+                ],
+                "recruitingCityList": cities
+                if cities is not None
+                else [
+                    {
+                        "id": "shenzhen",
+                        "name": "深圳市",
+                        "recruitingOrgIdList": ["108116"],
+                    },
+                    {
+                        "id": "shanghai",
+                        "name": "上海市",
+                        "recruitingOrgIdList": ["108116"],
+                    },
+                ],
+            }
+        )
+
+    @classmethod
+    def _cmb_page(cls, total, items):
+        return cls._cmb_payload({"total": total, "data": items})
+
+    @classmethod
+    def _cmb_detail(
+        cls,
+        publish_id="ai-1",
+        title="算法工程师（深圳）",
+        location="深圳市",
+        recruitment_type_id="96574F8D-C7ED-4772-AE7C-BAC896D190C1",
+        job_code="SZ004-2027-AU",
+        requirement="<p>2027年应届毕业生，硕士及以上学历，掌握Python。</p>",
+    ):
+        return cls._cmb_payload(
+            {
+                "publishGID": publish_id,
+                "recruitmentTypeID": recruitment_type_id,
+                "jobCode": job_code,
+                "jobDisplay": title,
+                "jobResponsibility": (
+                    "<p>负责人工智能与机器学习在服务、营销和风控中的应用。</p>"
+                ),
+                "jobRequirement": requirement,
+                "branchCode": "108116",
+                "branchCodeName": "招银网络科技",
+                "locationName": location,
+                "expiredOn": "2026-09-20",
+            }
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cmb_paginates_filters_and_verifies_target_cycle(self, fetch):
+        fetch.side_effect = [
+            self._cmb_info(),
+            self._cmb_page(
+                3,
+                [
+                    {
+                        "publishGID": "ai-1",
+                        "jobDisplay": "算法工程师（深圳）",
+                        "branchCode": "108116",
+                        "branchCodeName": "招银网络科技",
+                        "location": "shenzhen",
+                        "locationName": "深圳市",
+                        "expiredOn": "2026-09-20",
+                    },
+                    {
+                        "publishGID": "sales-1",
+                        "jobDisplay": "市场营销岗",
+                        "branchCode": "108116",
+                        "branchCodeName": "招银网络科技",
+                        "location": "shenzhen",
+                        "locationName": "深圳市",
+                        "expiredOn": "2026-09-20",
+                    },
+                ],
+            ),
+            self._cmb_page(
+                3,
+                [
+                    {
+                        "publishGID": "backend-1",
+                        "jobDisplay": "后端开发工程师（上海）",
+                        "branchCode": "108116",
+                        "branchCodeName": "招银网络科技",
+                        "location": "shanghai",
+                        "locationName": "上海市",
+                        "expiredOn": "2026-09-20",
+                    }
+                ],
+            ),
+            self._cmb_detail(),
+            self._cmb_detail(
+                publish_id="backend-1",
+                title="后端开发工程师（上海）",
+                location="上海市",
+                job_code="SH001-2027-AU",
+                requirement="<p>2027届应届毕业生，本科及以上学历。</p>",
+            ),
+        ]
+
+        jobs = CmbCampusCollector(self._cmb_source()).collect()
+
+        self.assertEqual(
+            [job.external_id for job in jobs], ["ai-1", "backend-1"]
+        )
+        self.assertEqual(jobs[0].company, "招银网络科技")
+        self.assertEqual(jobs[0].education, "硕士及以上")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertEqual(jobs[0].deadline, "2026-09-20")
+        self.assertIn("人工智能与机器学习", jobs[0].description)
+        self.assertIn("营销和风控", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://career.cmbchina.com/positionDetail/school"
+            "?publishId=ai-1",
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["json_body"]["recruitmentTypeId"],
+            "96574F8D-C7ED-4772-AE7C-BAC896D190C1",
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cmb_returns_empty_when_formal_entry_has_no_jobs(self, fetch):
+        fetch.side_effect = [
+            self._cmb_info(organizations=[], cities=[]),
+            self._cmb_page(0, []),
+        ]
+
+        jobs = CmbCampusCollector(self._cmb_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cmb_skips_previous_graduate_cycle(self, fetch):
+        fetch.side_effect = [
+            self._cmb_info(),
+            self._cmb_page(
+                1,
+                [
+                    {
+                        "publishGID": "ai-2026",
+                        "jobDisplay": "算法工程师（深圳）",
+                        "branchCode": "108116",
+                        "branchCodeName": "招银网络科技",
+                        "location": "shenzhen",
+                        "locationName": "深圳市",
+                        "expiredOn": "2025-09-20",
+                    }
+                ],
+            ),
+            self._cmb_detail(
+                publish_id="ai-2026",
+                job_code="SZ004-2026-AU",
+                requirement="<p>2026年应届毕业生，硕士及以上学历。</p>",
+            ),
+        ]
+
+        jobs = CmbCampusCollector(self._cmb_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_cmb_rejects_internship_detail_from_formal_entry(self, fetch):
+        fetch.side_effect = [
+            self._cmb_info(),
+            self._cmb_page(
+                1,
+                [
+                    {
+                        "publishGID": "intern-1",
+                        "jobDisplay": "算法工程师（深圳）",
+                        "branchCode": "108116",
+                        "branchCodeName": "招银网络科技",
+                        "location": "shenzhen",
+                        "locationName": "深圳市",
+                        "expiredOn": "2026-09-20",
+                    }
+                ],
+            ),
+            self._cmb_detail(
+                publish_id="intern-1",
+                recruitment_type_id="DF94FD6D-26D3-4A19-9E69-577C4BA1DE82",
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "不是正式应届生入口"):
+            CmbCampusCollector(self._cmb_source()).collect()
 
     @staticmethod
     def _byd_source():
