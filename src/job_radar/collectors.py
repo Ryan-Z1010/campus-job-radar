@@ -4923,6 +4923,228 @@ class CmbCampusCollector(Collector):
         return jobs
 
 
+class SfTechCampusCollector(Collector):
+    """Collect formal graduate roles from SF's public campus API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _request_json(self, url: str, label: str) -> Any:
+        service_root = self.source.get(
+            "service_root", urljoin(self.source["homepage"], "/")
+        )
+        try:
+            return json.loads(
+                fetch_bytes(
+                    url,
+                    timeout=int(self.source.get("timeout", 20)),
+                    headers={
+                        "Accept": "application/json",
+                        "Referer": self.source["homepage"],
+                        "cr-service": quote(service_root, safe=""),
+                    },
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("{}返回了无效 JSON".format(label)) from exc
+
+    def _positions(self) -> List[Dict[str, Any]]:
+        page_size = max(1, int(self.source.get("page_size", 100)))
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        positions = []
+        seen_ids = set()
+        expected_total = None
+        expected_pages = None
+
+        for page_number in range(1, max_pages + 1):
+            url = "{}?{}".format(
+                self.source["positions_url"],
+                urlencode({"pageNum": page_number, "pageSize": page_size}),
+            )
+            payload = self._request_json(url, "顺丰校园岗位接口")
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("list"), list
+            ):
+                raise ValueError("顺丰校园岗位接口响应结构异常")
+            try:
+                total = int(payload["total"])
+                pages = int(payload["pages"])
+                actual_page = int(payload["pageNum"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("顺丰校园岗位分页字段异常") from exc
+            calculated_pages = (total + page_size - 1) // page_size
+            if pages != calculated_pages:
+                raise ValueError("顺丰校园岗位总页数不一致")
+            if total and actual_page != page_number:
+                raise ValueError("顺丰校园岗位返回页码不一致")
+            if expected_total is None:
+                expected_total = total
+                expected_pages = pages
+                if pages > max_pages:
+                    raise ValueError("顺丰校园岗位分页超过安全上限")
+            elif total != expected_total or pages != expected_pages:
+                raise ValueError("顺丰校园岗位分页总数发生变化")
+
+            items = payload["list"]
+            if len(items) > page_size:
+                raise ValueError("顺丰校园岗位单页数量超过请求上限")
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("顺丰校园岗位列表项结构异常")
+                position_id = str(item.get("id", "") or "").strip()
+                title = str(item.get("positionName", "") or "").strip()
+                organization = str(
+                    item.get("orgSourceName", "") or ""
+                ).strip()
+                location = str(item.get("demandCity", "") or "").strip()
+                season_id = str(item.get("seasonId", "") or "").strip()
+                if not all(
+                    (position_id, title, organization, location, season_id)
+                ):
+                    raise ValueError("顺丰校园岗位缺少必要字段")
+                if position_id in seen_ids:
+                    raise ValueError("顺丰校园岗位分页返回重复 ID")
+                seen_ids.add(position_id)
+                positions.append(item)
+
+            if page_number >= pages:
+                break
+
+        if expected_total is None or len(positions) != expected_total:
+            raise ValueError("顺丰校园岗位分页数量不完整")
+        return positions
+
+    def _detail(self, position_id: str) -> Dict[str, Any]:
+        url = self.source["detail_api_url_template"].format(
+            position_id=quote(position_id)
+        )
+        payload = self._request_json(url, "顺丰校园岗位详情接口")
+        if not isinstance(payload, dict):
+            raise ValueError("顺丰校园岗位详情响应结构异常")
+        if str(payload.get("id", "") or "").strip() != position_id:
+            raise ValueError("顺丰校园岗位详情 ID 与列表不一致")
+        return payload
+
+    def _job(self, item: Dict[str, Any]) -> JobPosting | None:
+        position_id = str(item["id"]).strip()
+        detail = self._detail(position_id)
+        fields = ("positionName", "orgSourceName", "demandCity", "seasonId")
+        if any(
+            str(detail.get(field, "") or "").strip()
+            != str(item.get(field, "") or "").strip()
+            for field in fields
+        ):
+            raise ValueError("顺丰校园岗位详情与列表必要字段不一致")
+
+        title = str(detail["positionName"]).strip()
+        company = str(detail["orgSourceName"]).strip()
+        organization_code = str(detail.get("orgSource", "") or "").strip()
+        location = str(detail["demandCity"]).strip()
+        season_name = str(detail.get("seasonName", "") or "").strip()
+        intern_type = " ".join(
+            (
+                str(detail.get("internType", "") or ""),
+                str(detail.get("internTypeName", "") or ""),
+            )
+        )
+        responsibility = str(detail.get("postDuty", "") or "").strip()
+        requirement = str(detail.get("jobRequirement", "") or "").strip()
+        education = str(detail.get("educationName", "") or "").strip()
+
+        target_codes = {
+            str(value).strip()
+            for value in self.source.get("target_org_sources", [])
+        }
+        target_names = {
+            str(value).strip()
+            for value in self.source.get("target_org_names", [])
+        }
+        if target_codes and organization_code not in target_codes:
+            return None
+        if target_names and company not in target_names:
+            return None
+        if not season_name:
+            raise ValueError("顺丰校园岗位详情缺少招聘届别名称")
+        if self._contains(
+            season_name, self.source.get("campaign_exclude_keywords", [])
+        ):
+            return None
+        target_campaigns = self.source.get("target_campaign_keywords", [])
+        if target_campaigns and not self._contains(
+            season_name, target_campaigns
+        ):
+            return None
+        formal_keywords = self.source.get("formal_campaign_keywords", [])
+        if formal_keywords and not self._contains(season_name, formal_keywords):
+            return None
+
+        searchable = " ".join(
+            (
+                title,
+                company,
+                location,
+                season_name,
+                intern_type,
+                responsibility,
+                requirement,
+                education,
+            )
+        )
+        if self._contains(searchable, self.source.get("exclude_keywords", [])):
+            return None
+        include_keywords = self.source.get("include_keywords", [])
+        if include_keywords and not self._contains(searchable, include_keywords):
+            return None
+        location_keywords = self.source.get("location_keywords", [])
+        if location_keywords and not self._contains(location, location_keywords):
+            return None
+        if self._contains(
+            " ".join((title, requirement, education)),
+            self.source.get("education_exclude_keywords", []),
+        ):
+            return None
+
+        description_parts = []
+        if responsibility:
+            description_parts.append("岗位职责：{}".format(responsibility))
+        if requirement:
+            description_parts.append("岗位要求：{}".format(requirement))
+        return JobPosting.from_mapping(
+            {
+                "external_id": position_id,
+                "title": title,
+                "company": company,
+                "company_type": self.source.get("company_type", "私企"),
+                "location": location,
+                "description": "｜".join(description_parts),
+                "education": education or self.source.get("education", ""),
+                "graduation_years": self.source.get(
+                    "graduation_years", []
+                ),
+                "deadline": self.source.get(
+                    "deadline", "以官方岗位页面为准"
+                ),
+                "url": self.source["detail_url_template"].format(
+                    position_id=quote(position_id)
+                ),
+                "source_name": self.source.get("name", self.source["id"]),
+            }
+        )
+
+    def collect(self) -> List[JobPosting]:
+        jobs = []
+        for item in self._positions():
+            job = self._job(item)
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+
 class CampaignWatchCollector(Collector):
     """Emit one notice when an official page announces a target campaign."""
 
@@ -5760,6 +5982,7 @@ COLLECTOR_TYPES = {
     "pingan_campus": PinganCampusCollector,
     "pwc_graduate_campaign": PwcGraduateCampaignCollector,
     "shein_campus": SheinCampusCollector,
+    "sf_tech_campus": SfTechCampusCollector,
     "tencent_campus": TencentCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
