@@ -34,6 +34,7 @@ from job_radar.collectors import (
     NoticeJsonCollector,
     PinganCampusCollector,
     PwcGraduateCampaignCollector,
+    SfTechCampusCollector,
     SheinCampusCollector,
     TencentCampusCollector,
     WebNoticeCollector,
@@ -450,6 +451,189 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不是正式应届生入口"):
             CmbCampusCollector(self._cmb_source()).collect()
+
+    @staticmethod
+    def _sf_source():
+        return {
+            "id": "sf_tech_graduate_2027",
+            "name": "顺丰科技2027届正式校招",
+            "type": "sf_tech_campus",
+            "homepage": "https://campus.sf-express.com/",
+            "service_root": "https://campus.sf-express.com/",
+            "positions_url": "https://campus.sf-express.com/api/positions",
+            "detail_api_url_template": (
+                "https://campus.sf-express.com/api/positions/{position_id}"
+            ),
+            "detail_url_template": (
+                "https://campus.sf-express.com/cr/index.html"
+                "#/postDetail/{position_id}"
+            ),
+            "company_type": "私企",
+            "target_org_sources": ["tech"],
+            "target_org_names": ["顺丰科技"],
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "人工智能", "算法", "数据", "开发"],
+            "exclude_keywords": ["实习", "销售", "营销", "博士后"],
+            "education_exclude_keywords": ["博士研究生", "仅限博士"],
+            "target_campaign_keywords": ["2027届"],
+            "formal_campaign_keywords": ["校园招聘", "应届生招聘", "校招"],
+            "campaign_exclude_keywords": ["实习"],
+            "page_size": 2,
+            "max_pages": 3,
+            "graduation_years": [2027],
+            "deadline": "以官方岗位页面为准",
+        }
+
+    @staticmethod
+    def _sf_item(
+        position_id,
+        title,
+        company="顺丰科技",
+        org_source="tech",
+        location="深圳市",
+        season_id=43,
+    ):
+        return {
+            "id": position_id,
+            "positionName": title,
+            "orgSource": org_source,
+            "orgSourceName": company,
+            "demandCity": location,
+            "seasonId": season_id,
+            "positionType": "dev",
+            "positionTypeName": "研发类",
+        }
+
+    @staticmethod
+    def _sf_page(page_number, total, pages, items):
+        return json.dumps(
+            {
+                "pageNum": page_number,
+                "pageSize": 2,
+                "pages": pages,
+                "total": total,
+                "list": items,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @classmethod
+    def _sf_detail(
+        cls,
+        position_id,
+        title,
+        company="顺丰科技",
+        org_source="tech",
+        location="深圳市",
+        season_id=43,
+        season_name="2027届校园招聘",
+        intern_type="",
+        intern_type_name="",
+        education="硕士研究生",
+        requirement="2027届硕士及以上学历，计算机相关专业。",
+    ):
+        detail = cls._sf_item(
+            position_id,
+            title,
+            company=company,
+            org_source=org_source,
+            location=location,
+            season_id=season_id,
+        )
+        detail.update(
+            {
+                "seasonName": season_name,
+                "internType": intern_type,
+                "internTypeName": intern_type_name,
+                "educationName": education,
+                "postDuty": "负责大模型、智能体与数据平台研发。",
+                "jobRequirement": requirement,
+            }
+        )
+        return json.dumps(detail, ensure_ascii=False).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sf_tech_paginates_and_filters_formal_target_roles(self, fetch):
+        ai_item = self._sf_item(2301, "大模型算法工程师")
+        sales_item = self._sf_item(2302, "销售管理培训生")
+        hq_item = self._sf_item(
+            2303,
+            "数据分析工程师",
+            company="顺丰总部",
+            org_source="headquarters",
+            location="广州市",
+        )
+        fetch.side_effect = [
+            self._sf_page(1, 3, 2, [ai_item, sales_item]),
+            self._sf_page(2, 3, 2, [hq_item]),
+            self._sf_detail(2301, "大模型算法工程师"),
+            self._sf_detail(2302, "销售管理培训生"),
+            self._sf_detail(
+                2303,
+                "数据分析工程师",
+                company="顺丰总部",
+                org_source="headquarters",
+                location="广州市",
+            ),
+        ]
+
+        jobs = SfTechCampusCollector(self._sf_source()).collect()
+
+        self.assertEqual([job.external_id for job in jobs], ["2301"])
+        self.assertEqual(jobs[0].company, "顺丰科技")
+        self.assertEqual(jobs[0].education, "硕士研究生")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("智能体与数据平台", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://campus.sf-express.com/cr/index.html#/postDetail/2301",
+        )
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs["headers"]["cr-service"],
+            "https%3A%2F%2Fcampus.sf-express.com%2F",
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sf_tech_returns_empty_during_internship_campaign(self, fetch):
+        item = self._sf_item(2227, "信息安全运营工程师-AI安全方向-实习生")
+        fetch.side_effect = [
+            self._sf_page(1, 1, 1, [item]),
+            self._sf_detail(
+                2227,
+                "信息安全运营工程师-AI安全方向-实习生",
+                season_id=43,
+                season_name="2027届实习生招聘",
+                intern_type="summerinternship",
+                intern_type_name="暑期实习",
+                education="大学本科",
+            ),
+        ]
+
+        jobs = SfTechCampusCollector(self._sf_source()).collect()
+
+        self.assertEqual(jobs, [])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sf_tech_rejects_detail_list_mismatch(self, fetch):
+        item = self._sf_item(2301, "大模型算法工程师")
+        fetch.side_effect = [
+            self._sf_page(1, 1, 1, [item]),
+            self._sf_detail(2301, "数据分析工程师"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "详情与列表必要字段不一致"):
+            SfTechCampusCollector(self._sf_source()).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sf_tech_rejects_duplicate_ids_across_pages(self, fetch):
+        item = self._sf_item(2301, "大模型算法工程师")
+        fetch.side_effect = [
+            self._sf_page(1, 3, 2, [item]),
+            self._sf_page(2, 3, 2, [item]),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "返回重复 ID"):
+            SfTechCampusCollector(self._sf_source()).collect()
 
     @staticmethod
     def _byd_source():
