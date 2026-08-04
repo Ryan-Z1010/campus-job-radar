@@ -4689,6 +4689,240 @@ class PinganCampusCollector(Collector):
         return jobs
 
 
+class CmbCampusCollector(Collector):
+    """Collect target graduate roles from CMB's public recruitment API."""
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _request_json(
+        self,
+        url: str,
+        label: str,
+        method: str = "GET",
+        request_json: Dict[str, Any] = None,
+    ) -> Any:
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    url,
+                    timeout=int(self.source.get("timeout", 20)),
+                    method=method,
+                    json_body=request_json,
+                    headers={
+                        "Accept": "application/json;charset=utf-8",
+                        "Referer": self.source["homepage"],
+                    },
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("{}返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("{}响应结构异常".format(label))
+        if str(payload.get("returnCode", "")) != "SUC0000":
+            raise ValueError(
+                "{}返回失败状态（returnCode={}）".format(
+                    label, payload.get("returnCode")
+                )
+            )
+        return payload.get("body")
+
+    def _recruiting_org_ids(self) -> set[str]:
+        recruitment_type_id = self.source["recruitment_type_id"]
+        url = "{}?{}".format(
+            self.source["recruiting_info_url"],
+            urlencode({"recruitmentTypeId": recruitment_type_id}),
+        )
+        body = self._request_json(url, "招商银行校招筛选接口")
+        if not isinstance(body, dict):
+            raise ValueError("招商银行校招筛选接口 body 结构异常")
+        organizations = body.get("recruitingOrgList")
+        cities = body.get("recruitingCityList")
+        if not isinstance(organizations, list) or not isinstance(cities, list):
+            raise ValueError("招商银行校招筛选接口缺少机构或城市列表")
+
+        organization_ids = set()
+        for item in organizations:
+            if not isinstance(item, dict):
+                raise ValueError("招商银行校招招聘机构结构异常")
+            organization_id = str(item.get("orgId", "") or "").strip()
+            organization_name = str(item.get("orgName", "") or "").strip()
+            if not organization_id or not organization_name:
+                raise ValueError("招商银行校招招聘机构缺少必要字段")
+            if organization_id in organization_ids:
+                raise ValueError("招商银行校招招聘机构返回重复 ID")
+            organization_ids.add(organization_id)
+        return organization_ids
+
+    def _positions(self, organization_ids: set[str]) -> List[Dict[str, Any]]:
+        page_size = max(1, int(self.source.get("page_size", 50)))
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        recruitment_type_id = self.source["recruitment_type_id"]
+        positions = []
+        seen_ids = set()
+        expected_total = None
+        expected_pages = None
+
+        for page_index in range(1, max_pages + 1):
+            body = self._request_json(
+                self.source["positions_url"],
+                "招商银行校招岗位接口",
+                method="POST",
+                request_json={
+                    "orgIdList": [],
+                    "keywords": "",
+                    "locationIdList": [],
+                    "pageIndex": page_index,
+                    "pageSize": page_size,
+                    "recruitmentTypeId": recruitment_type_id,
+                },
+            )
+            if not isinstance(body, dict) or not isinstance(
+                body.get("data"), list
+            ):
+                raise ValueError("招商银行校招岗位接口 body 结构异常")
+            try:
+                total = int(body["total"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("招商银行校招岗位总数字段异常") from exc
+            pages = (total + page_size - 1) // page_size
+            if expected_total is None:
+                expected_total = total
+                expected_pages = pages
+                if expected_pages > max_pages:
+                    raise ValueError("招商银行校招岗位分页超过安全上限")
+            elif total != expected_total or pages != expected_pages:
+                raise ValueError("招商银行校招岗位分页总数发生变化")
+
+            items = body["data"]
+            if len(items) > page_size:
+                raise ValueError("招商银行校招岗位单页数量超过请求上限")
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("招商银行校招岗位列表项结构异常")
+                publish_id = str(item.get("publishGID", "") or "").strip()
+                title = str(item.get("jobDisplay", "") or "").strip()
+                company = str(item.get("branchCodeName", "") or "").strip()
+                location = str(item.get("locationName", "") or "").strip()
+                organization_id = str(item.get("branchCode", "") or "").strip()
+                if not publish_id or not title or not company or not location:
+                    raise ValueError("招商银行校招岗位缺少必要字段")
+                if organization_ids and organization_id not in organization_ids:
+                    raise ValueError("招商银行校招岗位返回了非公开招聘机构")
+                if publish_id in seen_ids:
+                    raise ValueError("招商银行校招岗位分页返回重复 ID")
+                seen_ids.add(publish_id)
+                positions.append(item)
+
+            if page_index >= pages:
+                break
+
+        if expected_total is None or len(positions) != expected_total:
+            raise ValueError("招商银行校招岗位分页数量不完整")
+        return positions
+
+    def _detail(self, publish_id: str) -> Dict[str, Any]:
+        url = "{}?{}".format(
+            self.source["detail_api_url"],
+            urlencode({"publishId": publish_id}),
+        )
+        body = self._request_json(url, "招商银行校招岗位详情接口")
+        if not isinstance(body, dict):
+            raise ValueError("招商银行校招岗位详情 body 结构异常")
+        if str(body.get("publishGID", "") or "").strip() != publish_id:
+            raise ValueError("招商银行校招岗位详情 ID 与列表不一致")
+        actual_type = str(body.get("recruitmentTypeID", "") or "").strip()
+        if actual_type != self.source["recruitment_type_id"]:
+            raise ValueError("招商银行校招岗位详情不是正式应届生入口")
+        return body
+
+    @staticmethod
+    def _education(requirement: str, fallback: str) -> str:
+        match = re.search(
+            r"(?:博士|硕士|本科|大学本科)(?:学历)?及以上",
+            requirement,
+        )
+        return match.group(0) if match else fallback
+
+    def _job(self, item: Dict[str, Any]) -> JobPosting | None:
+        publish_id = str(item["publishGID"]).strip()
+        title = str(item["jobDisplay"]).strip()
+        company = str(item["branchCodeName"]).strip()
+        location = str(item["locationName"]).strip()
+        searchable = " ".join((title, company, location))
+        if self._contains(searchable, self.source.get("exclude_keywords", [])):
+            return None
+        include_keywords = self.source.get("include_keywords", [])
+        if include_keywords and not self._contains(searchable, include_keywords):
+            return None
+        location_keywords = self.source.get("location_keywords", [])
+        if location_keywords and not self._contains(location, location_keywords):
+            return None
+
+        detail = self._detail(publish_id)
+        detail_title = str(detail.get("jobDisplay", "") or "").strip()
+        detail_company = str(detail.get("branchCodeName", "") or "").strip()
+        detail_location = str(detail.get("locationName", "") or "").strip()
+        if (detail_title, detail_company, detail_location) != (
+            title,
+            company,
+            location,
+        ):
+            raise ValueError("招商银行校招岗位详情与列表必要字段不一致")
+
+        responsibility = _html_fragment_text(detail.get("jobResponsibility"))
+        requirement = _html_fragment_text(detail.get("jobRequirement"))
+        campaign_text = " ".join(
+            (
+                str(detail.get("jobCode", "") or ""),
+                detail_title,
+                responsibility,
+                requirement,
+            )
+        )
+        target_keywords = self.source.get("target_campaign_keywords", [])
+        if target_keywords and not self._contains(campaign_text, target_keywords):
+            return None
+
+        description_parts = []
+        if responsibility:
+            description_parts.append("岗位职责：{}".format(responsibility))
+        if requirement:
+            description_parts.append("岗位要求：{}".format(requirement))
+        values = {
+            "external_id": publish_id,
+            "title": title,
+            "company": company,
+            "company_type": self.source.get("company_type", "私企"),
+            "location": location,
+            "description": "｜".join(description_parts),
+            "education": self._education(
+                requirement, self.source.get("education", "")
+            ),
+            "graduation_years": self.source.get("graduation_years", []),
+            "deadline": detail.get("expiredOn") or item.get("expiredOn", ""),
+            "url": self.source["detail_url_template"].format(
+                publish_id=quote(publish_id)
+            ),
+            "source_name": self.source.get("name", self.source["id"]),
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        organization_ids = self._recruiting_org_ids()
+        jobs = []
+        for item in self._positions(organization_ids):
+            job = self._job(item)
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+
 class CampaignWatchCollector(Collector):
     """Emit one notice when an official page announces a target campaign."""
 
@@ -5506,6 +5740,7 @@ COLLECTOR_TYPES = {
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "byd_campus": BydCampusCollector,
     "campaign_watch": CampaignWatchCollector,
+    "cmb_campus": CmbCampusCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "cvte_campus": CvteCampusCollector,
     "fixture_json": FixtureJsonCollector,
