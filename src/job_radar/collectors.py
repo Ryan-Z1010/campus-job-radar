@@ -5494,6 +5494,234 @@ class BeisenPortalCampaignCollector(Collector):
         return [JobPosting.from_mapping(values)]
 
 
+class BeisenModernCampusCollector(Collector):
+    """Collect live campus jobs from a modern public Beisen portal."""
+
+    DISPLAY_FIELDS = [
+        "Category",
+        "Kind",
+        "LocId",
+        "DetailAddress",
+        "Org",
+        "HeadCount",
+        "Station",
+        "EndTime",
+        "PostDate",
+        "Salary",
+        "Degree",
+        "YearsOfWorking",
+        "ClassificationOne",
+        "ClassificationTwo",
+        "Classification3",
+        "Classification4",
+        "Classification5",
+        "Classification6",
+    ]
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any) -> str:
+        rendered = str(value or "").strip()
+        if not rendered or rendered.startswith("0001-01-01"):
+            return ""
+        return rendered[:10]
+
+    @staticmethod
+    def _decode_api(raw: bytes) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("北森新版校园岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("北森新版校园岗位接口响应结构异常")
+        if payload.get("Code") != 200:
+            raise ValueError(
+                "北森新版校园岗位接口失败（Code={}）".format(
+                    payload.get("Code")
+                )
+            )
+        if not isinstance(payload.get("Count"), int):
+            raise ValueError("北森新版校园岗位接口缺少 Count")
+        if not isinstance(payload.get("Data"), list):
+            raise ValueError("北森新版校园岗位接口缺少 Data 数组")
+        return payload
+
+    def collect(self) -> List[JobPosting]:
+        homepage = self.source["homepage"]
+        portal_body = fetch_bytes(homepage).decode(
+            "utf-8", errors="replace"
+        )
+        portal_data = BeisenPortalCampaignCollector._portal_data(portal_body)
+
+        expected_tenant = self.source.get("tenant_name", "")
+        tenant_info = portal_data.get("tenantInfo")
+        actual_tenant = (
+            tenant_info.get("Name", "")
+            if isinstance(tenant_info, dict)
+            else ""
+        )
+        if expected_tenant and actual_tenant != expected_tenant:
+            raise ValueError("北森新版招聘门户返回了非目标租户")
+
+        portal_id = portal_data.get("PortalId")
+        if not isinstance(portal_id, str) or not portal_id:
+            raise ValueError("北森新版招聘门户缺少 PortalId")
+        expected_portal_id = self.source.get("portal_id", "")
+        if expected_portal_id and portal_id != expected_portal_id:
+            raise ValueError("北森新版招聘门户 PortalId 已变化")
+
+        pages = portal_data.get("Pages")
+        if not isinstance(pages, list):
+            raise ValueError("北森新版招聘门户缺少 Pages 数组")
+        campus_pages = [
+            page
+            for page in pages
+            if isinstance(page, dict)
+            and str(page.get("BusinessType")) == "2"
+            and page.get("PageType") == 2
+        ]
+        if not campus_pages:
+            raise ValueError("北森新版招聘门户缺少校园招聘列表页")
+
+        api_url = self.source.get(
+            "url",
+            urljoin(homepage, "/api/Jobad/GetJobAdPageList"),
+        )
+        page_size = max(1, min(int(self.source.get("page_size", 50)), 100))
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = self.source.get("min_published_at", "")[:10]
+        detail_template = self.source.get(
+            "detail_url_template",
+            urljoin(homepage, "/campus/detail?jobAdId={job_ad_id}"),
+        )
+
+        jobs = []
+        seen_ids = set()
+        expected_count = None
+        for page_index in range(max_pages):
+            request_json = {
+                "PageIndex": page_index,
+                "PageSize": page_size,
+                "PortalId": portal_id,
+                "Category": [2],
+                "DisplayFields": self.DISPLAY_FIELDS,
+            }
+            payload = self._decode_api(
+                fetch_bytes(
+                    api_url,
+                    method="POST",
+                    json_body=request_json,
+                    headers={"Referer": homepage},
+                )
+            )
+            if expected_count is None:
+                expected_count = payload["Count"]
+            elif payload["Count"] != expected_count:
+                raise ValueError("北森新版校园岗位分页总数发生变化")
+
+            items = payload["Data"]
+            if not items and len(seen_ids) < expected_count:
+                raise ValueError("北森新版校园岗位分页提前结束")
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("北森新版校园岗位列表元素结构异常")
+                external_id = str(item.get("Id") or "").strip()
+                title = str(item.get("JobAdName") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("北森新版校园岗位缺少必要字段")
+                if str(item.get("CategoryId")) != "2":
+                    raise ValueError("北森新版校园岗位接口混入非校招岗位")
+                if external_id in seen_ids:
+                    continue
+                seen_ids.add(external_id)
+
+                raw_locations = item.get("LocNames") or []
+                if not isinstance(raw_locations, list):
+                    raise ValueError("北森新版校园岗位地点字段结构异常")
+                location = "、".join(
+                    str(value).strip()
+                    for value in raw_locations
+                    if str(value).strip()
+                ) or self.source.get("location", "待核对")
+                published_at = self._date(item.get("PostDate"))
+                if min_published_at and (
+                    not published_at or published_at < min_published_at
+                ):
+                    continue
+
+                org = str(item.get("Org") or "").strip()
+                duty = str(item.get("Duty") or "").strip()
+                requirement = str(item.get("Require") or "").strip()
+                description = "\n".join(
+                    value
+                    for value in [
+                        "招聘单位/部门：{}".format(org) if org else "",
+                        "岗位职责：{}".format(duty) if duty else "",
+                        "任职要求：{}".format(requirement)
+                        if requirement
+                        else "",
+                    ]
+                    if value
+                )
+                searchable = " ".join(
+                    [title, org, location, duty, requirement]
+                )
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_keywords and not self._contains(
+                    searchable, include_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                values = {
+                    "external_id": external_id,
+                    "title": title,
+                    "company": self.source.get(
+                        "company", self.source["name"]
+                    ),
+                    "company_type": self.source.get(
+                        "company_type", "未知"
+                    ),
+                    "location": location,
+                    "description": description,
+                    "education": self.source.get(
+                        "education",
+                        "校园招聘，具体学历及毕业时间要求以岗位详情为准",
+                    ),
+                    "graduation_years": self.source.get(
+                        "graduation_years", []
+                    ),
+                    "published_at": published_at,
+                    "deadline": self._date(item.get("EndTime")),
+                    "url": detail_template.format(
+                        job_ad_id=external_id,
+                        jobAdId=external_id,
+                    ),
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            if len(seen_ids) >= expected_count:
+                return jobs
+
+        raise ValueError("北森新版校园岗位分页超过配置上限")
+
+
 class _BeisenLegacyJobListParser(HTMLParser):
     """Parse the server-rendered job table used by older Beisen portals."""
 
@@ -5992,6 +6220,7 @@ class HtmlLinksCollector(Collector):
 COLLECTOR_TYPES = {
     "accenture_early_career": AccentureEarlyCareerCollector,
     "beisen_legacy_campus": BeisenLegacyCampusCollector,
+    "beisen_modern_campus": BeisenModernCampusCollector,
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "byd_campus": BydCampusCollector,
     "campaign_watch": CampaignWatchCollector,
