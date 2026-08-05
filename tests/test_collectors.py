@@ -16,6 +16,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     BydCampusCollector,
     CampaignWatchCollector,
+    ChinaResourcesCampusCollector,
     ChinaSouthernPowerGridCollector,
     CmbCampusCollector,
     CvteCampusCollector,
@@ -4122,6 +4123,223 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "混入非校招岗位"):
             BeisenModernCampusCollector(
                 self._beisen_modern_source()
+            ).collect()
+
+    @staticmethod
+    def _china_resources_source():
+        return {
+            "id": "china_resources_group_campus",
+            "name": "华润集团校园招聘",
+            "type": "china_resources_campus",
+            "homepage": "https://runjob.example.com/",
+            "native_script_url": "https://runjob.example.com/indexNative.js",
+            "api_url": "https://api.example.com/ssdp/sys/rf/",
+            "website_config_id": "crc-campus-site",
+            "required_website_name": "华润",
+            "company": "华润集团",
+            "company_type": "央企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "人工智能", "数据", "数字化"],
+            "exclude_keywords": ["实习", "2026届"],
+            "min_published_at": "2026-06-01",
+            "page_size": 2,
+            "max_pages": 3,
+        }
+
+    @staticmethod
+    def _china_resources_response(value) -> bytes:
+        encoded = base64.b64encode(
+            json.dumps(value, ensure_ascii=False).encode("utf-8")
+        ).decode("ascii")
+        return json.dumps(
+            {
+                "RESPONSE": {
+                    "RETURN_CODE": "MS000A000",
+                    "RETURN_DESC": "成功",
+                    "RETURN_DATA": encoded,
+                }
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _china_resources_portal():
+        return {
+            "websiteConfig": {
+                "id": "crc-campus-site",
+                "websiteName": "华润集团招聘官网",
+                "configStatus": 1,
+            },
+            "positionConfig": {
+                "id": "crc-position-page",
+                "complexWsConfigId": "crc-campus-site",
+            },
+        }
+
+    @staticmethod
+    def _china_resources_job(
+        job_id,
+        title,
+        location,
+        published_at,
+        *,
+        type_id="A02",
+        brand="华润数科",
+        requirement="熟悉 Python 和 SQL",
+    ):
+        return {
+            "pubPositionId": job_id,
+            "pubPositionName": title,
+            "typeId": type_id,
+            "typeIdDescr": "校园招聘" if type_id == "A02" else "社会招聘",
+            "brandName": brand,
+            "companyDescr": "华润数字科技有限公司",
+            "deptIdDescr": "智能与数字化部",
+            "locationDescr": location,
+            "publishDate": published_at,
+            "rmEducationalRqmtDescr": "硕士及以上",
+            "rmJobDuty": "建设数据平台与人工智能应用",
+            "rmJobRqmt": requirement,
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_resources_campus_paginates_filters_and_maps_jobs(
+        self, fetch
+    ):
+        fetch.side_effect = [
+            b'<script src="indexNative.js"></script>',
+            b"#/complex/homepage?id=crc-campus-site",
+            self._china_resources_response(
+                self._china_resources_portal()
+            ),
+            self._china_resources_response(
+                {
+                    "total": 3,
+                    "data": [
+                        self._china_resources_job(
+                            "crc-ai",
+                            "智能与数字化工程师（校招）",
+                            "中国,广东,深圳市",
+                            "2026-07-03",
+                        ),
+                        self._china_resources_job(
+                            "crc-intern",
+                            "数据实习生",
+                            "中国,上海,上海市",
+                            "2026-07-20",
+                        ),
+                    ],
+                }
+            ),
+            self._china_resources_response(
+                {
+                    "total": 3,
+                    "data": [
+                        self._china_resources_job(
+                            "crc-old",
+                            "人工智能工程师",
+                            "中国,北京,北京市",
+                            "2026-05-01",
+                        )
+                    ],
+                }
+            ),
+        ]
+
+        jobs = ChinaResourcesCampusCollector(
+            self._china_resources_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "crc-ai")
+        self.assertEqual(jobs[0].title, "智能与数字化工程师（校招）")
+        self.assertEqual(jobs[0].company, "华润集团 · 华润数科")
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "中国,广东,深圳市")
+        self.assertEqual(jobs[0].education, "硕士及以上")
+        self.assertEqual(jobs[0].published_at, "2026-07-03")
+        self.assertIn("华润数字科技有限公司", jobs[0].description)
+        self.assertIn("人工智能应用", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://runjob.example.com/#/complex/RecruitDetail"
+            "?id=crc-ai&comId=crc-campus-site&typeId=A02",
+        )
+        self.assertEqual(fetch.call_count, 5)
+
+        first_position_request = fetch.call_args_list[3]
+        request_body = json.loads(
+            base64.b64decode(
+                first_position_request.kwargs["json_body"]["base64String"]
+            ).decode("utf-8")
+        )
+        self.assertEqual(
+            request_body["biz"]["method"],
+            "getSynthesizeHomepagePosition",
+        )
+        self.assertEqual(request_body["biz"]["param"]["rmType"], "A02")
+        self.assertEqual(request_body["biz"]["param"]["pageNum"], 1)
+        self.assertEqual(request_body["biz"]["param"]["pageSize"], 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_resources_campus_empty_result_is_successful(self, fetch):
+        fetch.side_effect = [
+            b'<script src="indexNative.js"></script>',
+            b"crc-campus-site",
+            self._china_resources_response(
+                self._china_resources_portal()
+            ),
+            self._china_resources_response({"total": 0, "data": []}),
+        ]
+
+        jobs = ChinaResourcesCampusCollector(
+            self._china_resources_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 4)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_resources_campus_rejects_changed_site_id(self, fetch):
+        fetch.side_effect = [
+            b'<script src="indexNative.js"></script>',
+            b"another-site-id",
+        ]
+
+        with self.assertRaisesRegex(ValueError, "默认站点 ID 已变化"):
+            ChinaResourcesCampusCollector(
+                self._china_resources_source()
+            ).collect()
+
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_resources_campus_rejects_non_campus_items(self, fetch):
+        fetch.side_effect = [
+            b'<script src="indexNative.js"></script>',
+            b"crc-campus-site",
+            self._china_resources_response(
+                self._china_resources_portal()
+            ),
+            self._china_resources_response(
+                {
+                    "total": 1,
+                    "data": [
+                        self._china_resources_job(
+                            "crc-social",
+                            "数据工程师",
+                            "中国,广东,深圳市",
+                            "2026-08-01",
+                            type_id="A01",
+                        )
+                    ],
+                }
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "混入非校招岗位"):
+            ChinaResourcesCampusCollector(
+                self._china_resources_source()
             ).collect()
 
     @staticmethod
