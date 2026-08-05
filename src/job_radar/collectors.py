@@ -6049,6 +6049,325 @@ class ChinaResourcesCampusCollector(Collector):
         raise ValueError("华润校园岗位分页超过配置上限")
 
 
+class ChinaElectronicsCampusCollector(Collector):
+    """Collect campus jobs from China Electronics' public portal."""
+
+    DEFAULT_API_URL = (
+        "https://campus.cec.com.cn/student-api/api/position/search"
+    )
+    DEFAULT_DETAIL_URL = (
+        "https://campus.cec.com.cn/student-api/api/position/find/{id}"
+    )
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _decode_response(raw: bytes, label: str) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("中国电子{}接口返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("中国电子{}接口响应结构异常".format(label))
+        if payload.get("code") != "000000":
+            raise ValueError(
+                "中国电子{}接口失败（code={}）".format(
+                    label, payload.get("code")
+                )
+            )
+        return payload
+
+    @staticmethod
+    def _position_date(position_no: Any) -> str:
+        match = re.search(r"20\d{6}", str(position_no or ""))
+        if not match:
+            return ""
+        try:
+            return datetime.strptime(match.group(0), "%Y%m%d").strftime(
+                "%Y-%m-%d"
+            )
+        except ValueError:
+            return ""
+
+    def _validate_portal(self) -> None:
+        body = fetch_bytes(self.source["homepage"]).decode(
+            "utf-8", errors="replace"
+        )
+        required_title = self.source.get(
+            "required_title", "中国电子信息产业集团有限公司招聘"
+        )
+        if required_title not in body:
+            raise ValueError("中国电子校招官网标题与预期不符")
+        if not re.search(r'/assets/index-[^"\']+\.js', body):
+            raise ValueError("中国电子校招官网未加载预期入口脚本")
+
+    def _search_page(self, page: int, page_size: int) -> Dict[str, Any]:
+        body = {
+            "page": page,
+            "size": page_size,
+            "name": "",
+            "positionType": int(self.source.get("position_type", 0)),
+            "functions": [],
+            "cities": [],
+            "degree": None,
+            "orgId": [],
+        }
+        raw = fetch_bytes(
+            self.source.get("url", self.DEFAULT_API_URL),
+            method="POST",
+            json_body=body,
+            headers={"Referer": self.source["homepage"]},
+        )
+        payload = self._decode_response(raw, "校园岗位")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("中国电子校园岗位接口缺少 data")
+        return data
+
+    def _job_detail(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        external_id = str(item["id"])
+        template = self.source.get(
+            "detail_api_url_template", self.DEFAULT_DETAIL_URL
+        )
+        raw = fetch_bytes(
+            template.format(id=quote(external_id, safe="")),
+            headers={"Referer": self.source["homepage"]},
+        )
+        payload = self._decode_response(raw, "岗位详情")
+        detail = payload.get("data")
+        if not isinstance(detail, dict):
+            raise ValueError("中国电子岗位详情接口缺少 data")
+        if str(detail.get("id") or "") != external_id:
+            raise ValueError("中国电子岗位详情返回了其他岗位")
+        if detail.get("positionType") != int(
+            self.source.get("position_type", 0)
+        ):
+            raise ValueError("中国电子校园岗位接口混入非校招岗位")
+        if str(detail.get("name") or "").strip() != str(
+            item.get("name") or ""
+        ).strip():
+            raise ValueError("中国电子岗位列表与详情标题不一致")
+        return detail
+
+    def _education(self, requirements: str) -> str:
+        for part in re.split(r"[\r\n]+", requirements):
+            rendered = " ".join(part.split()).strip(" ;；")
+            if rendered and self._contains(
+                rendered, ["学历", "本科", "硕士", "博士", "毕业生"]
+            ):
+                return rendered
+        return self.source.get(
+            "education", "校园招聘，学历及毕业时间以官网为准"
+        )
+
+    def _to_job(
+        self,
+        item: Dict[str, Any],
+        detail: Dict[str, Any],
+        position_date: str,
+    ) -> JobPosting:
+        requirements = str(
+            detail.get("jobRequirements")
+            or item.get("jobRequirements")
+            or ""
+        ).strip()
+        duties = str(
+            detail.get("jobDescription")
+            or item.get("jobDescription")
+            or ""
+        ).strip()
+        employer = str(
+            detail.get("orgName") or item.get("org") or ""
+        ).strip()
+        second_org = str(
+            detail.get("positionSecondOrg")
+            or item.get("positionSecondOrg")
+            or ""
+        ).strip()
+        function_name = str(detail.get("functionName") or "").strip()
+        position_no = str(
+            detail.get("positionNo") or item.get("positionNo") or ""
+        ).strip()
+        group_name = self.source.get("company", "中国电子")
+        company = (
+            "{} · {}".format(group_name, employer)
+            if employer and employer != group_name
+            else group_name
+        )
+        description = "\n".join(
+            value
+            for value in [
+                "二级单位：{}".format(second_org) if second_org else "",
+                "招聘单位：{}".format(employer) if employer else "",
+                "岗位类别：{}".format(function_name)
+                if function_name
+                else "",
+                "岗位编号：{}".format(position_no)
+                if position_no
+                else "",
+                "岗位职责：{}".format(duties) if duties else "",
+                "任职要求：{}".format(requirements)
+                if requirements
+                else "",
+            ]
+            if value
+        )
+        external_id = str(item["id"])
+        detail_template = self.source.get(
+            "detail_url_template",
+            "https://campus.cec.com.cn/positionDetail?id={id}",
+        )
+        values = {
+            "external_id": external_id,
+            "title": str(item["name"]).strip(),
+            "company": company,
+            "company_type": self.source.get("company_type", "央企"),
+            "location": str(item.get("cityName") or "").strip()
+            or self.source.get("location", "待核对"),
+            "description": description,
+            "education": self._education(requirements),
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": position_date,
+            "deadline": self.source.get(
+                "deadline", "以官方岗位页面为准"
+            ),
+            "url": detail_template.format(
+                id=quote(external_id, safe="")
+            ),
+            "source_name": self.source["name"],
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        self._validate_portal()
+        page_size = max(1, min(int(self.source.get("page_size", 100)), 100))
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        min_position_date = self.source.get(
+            "min_position_no_date", ""
+        )[:10]
+        location_keywords = self.source.get("location_keywords", [])
+        include_title_keywords = self.source.get(
+            "include_title_keywords", []
+        )
+        exclude_title_keywords = self.source.get(
+            "exclude_title_keywords", []
+        )
+        exclude_text_keywords = self.source.get(
+            "exclude_text_keywords", []
+        )
+        allowed_work_natures = self.source.get(
+            "work_natures", ["全职"]
+        )
+        active_status = self.source.get("active_status", 5)
+
+        jobs = []
+        seen_ids = set()
+        page_signatures = set()
+        received_count = 0
+        expected_total = None
+        expected_pages = None
+        for page in range(1, max_pages + 1):
+            data = self._search_page(page, page_size)
+            items = data.get("records")
+            total = data.get("total")
+            current = data.get("current")
+            pages = data.get("pages")
+            if (
+                not isinstance(items, list)
+                or not isinstance(total, int)
+                or not isinstance(current, int)
+                or not isinstance(pages, int)
+            ):
+                raise ValueError("中国电子校园岗位分页字段异常")
+            if current != page:
+                raise ValueError("中国电子校园岗位返回错误页码")
+            if expected_total is None:
+                expected_total = total
+                expected_pages = pages
+            elif total != expected_total or pages != expected_pages:
+                raise ValueError("中国电子校园岗位分页总数发生变化")
+            calculated_pages = (
+                (expected_total + page_size - 1) // page_size
+                if expected_total
+                else 0
+            )
+            if expected_pages != calculated_pages:
+                raise ValueError("中国电子校园岗位页数与总数不一致")
+            if not items and received_count < expected_total:
+                raise ValueError("中国电子校园岗位分页提前结束")
+
+            signature = tuple(
+                str(item.get("id") or "")
+                for item in items
+                if isinstance(item, dict)
+            )
+            if items and signature in page_signatures:
+                raise ValueError("中国电子校园岗位重复返回同一分页")
+            page_signatures.add(signature)
+            received_count += len(items)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("中国电子校园岗位列表元素结构异常")
+                external_id = str(item.get("id") or "").strip()
+                title = str(item.get("name") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("中国电子校园岗位缺少必要字段")
+                if external_id in seen_ids:
+                    raise ValueError("中国电子校园岗位出现重复岗位 ID")
+                seen_ids.add(external_id)
+
+                location = str(item.get("cityName") or "").strip()
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_title_keywords and not self._contains(
+                    title, include_title_keywords
+                ):
+                    continue
+                if self._contains(title, exclude_title_keywords):
+                    continue
+                work_nature = str(item.get("workNature") or "").strip()
+                if allowed_work_natures and work_nature not in allowed_work_natures:
+                    continue
+                all_text = " ".join(
+                    str(item.get(field) or "")
+                    for field in (
+                        "name",
+                        "jobDescription",
+                        "jobRequirements",
+                        "org",
+                    )
+                )
+                if self._contains(all_text, exclude_text_keywords):
+                    continue
+
+                position_date = self._position_date(item.get("positionNo"))
+                if min_position_date and not position_date:
+                    raise ValueError(
+                        "中国电子候选岗位编号缺少可核验日期"
+                    )
+                if min_position_date and position_date < min_position_date:
+                    continue
+
+                detail = self._job_detail(item)
+                if detail.get("status") != active_status:
+                    continue
+                jobs.append(self._to_job(item, detail, position_date))
+
+            if received_count >= expected_total:
+                return jobs
+
+        raise ValueError("中国电子校园岗位分页超过配置上限")
+
+
 class _BeisenLegacyJobListParser(HTMLParser):
     """Parse the server-rendered job table used by older Beisen portals."""
 
@@ -6553,6 +6872,7 @@ COLLECTOR_TYPES = {
     "campaign_watch": CampaignWatchCollector,
     "cmb_campus": CmbCampusCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
+    "china_electronics_campus": ChinaElectronicsCampusCollector,
     "china_resources_campus": ChinaResourcesCampusCollector,
     "cvte_campus": CvteCampusCollector,
     "fixture_json": FixtureJsonCollector,
