@@ -22,6 +22,7 @@ from job_radar.collectors import (
     GdutCampusNoticeCollector,
     GiihgCampusCollector,
     GzRecruitCompanyCollector,
+    HonorCampusCollector,
     HotjobCampusCollector,
     HsbcProgrammeCollector,
     HuaweiCampusCollector,
@@ -3415,6 +3416,107 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
             HotjobCampusCollector(self._hotjob_source()).collect()
+
+    @staticmethod
+    def _honor_source():
+        portal = (
+            "https://career.honor.com/"
+            "SU60eea919bef57c1023f6fe78/pb/school.html"
+        )
+        return {
+            **CollectorTests._hotjob_source(),
+            "id": "honor_graduate_2027",
+            "name": "荣耀终端2027届正式校招",
+            "type": "honor_campus",
+            "campaign_url": "https://www.honor.com/cn/career/",
+            "campaign_timeout": 60,
+            "campaign_headers": {
+                "User-Agent": "Mozilla/5.0 CampusJobRadar/0.1"
+            },
+            "expected_portal_url": portal,
+            "required_text": "校招入口",
+            "homepage": portal,
+            "company": "荣耀终端股份有限公司",
+            "company_type": "私企",
+            "prefer_source_company": True,
+            "target_campaign_keywords": ["荣耀2027届校园招聘"],
+            "target_keywords": ["2027届校园招聘", "2027校园招聘"],
+            "url_template": (
+                "https://career.honor.com/"
+                "SU60eea919bef57c1023f6fe78/pb/"
+                "posDetail.html?postId={postId}&postType=campus"
+            ),
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_honor_campus_returns_empty_before_target_campaign(self, fetch):
+        source = self._honor_source()
+        fetch.return_value = (
+            '<p>校招入口</p><a href="{}">应届生</a>'
+            '<p>荣耀2026届校园招聘全球热招</p>'.format(
+                source["expected_portal_url"]
+            )
+        ).encode("utf-8")
+
+        self.assertEqual(HonorCampusCollector(source).collect(), [])
+        fetch.assert_called_once_with(
+            source["campaign_url"],
+            timeout=60,
+            headers=source["campaign_headers"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_honor_campus_validates_campaign_and_maps_target_job(self, fetch):
+        source = self._honor_source()
+        fetch.side_effect = [
+            (
+                '<p>校招入口</p><a href="{}">应届生</a>'
+                '<p>校招 | 荣耀2027届校园招聘全球热招</p>'.format(
+                    source["expected_portal_url"]
+                )
+            ).encode("utf-8"),
+            self._hotjob_page(
+                [
+                    {
+                        "postId": "honor-ai-2027",
+                        "postName": "AI算法工程师",
+                        "projectName": "荣耀2027届校园招聘",
+                        "postTypeName": "研发类",
+                        "company": "荣耀校园招聘",
+                        "department": "AI与数据平台部",
+                        "workPlaceStr": "深圳市",
+                        "educationStr": "硕士研究生及以上",
+                        "publishFirstDate": "2026-08-10 09:00:00",
+                        "endDate": "3000-01-01 00:00:00",
+                    }
+                ]
+            ),
+        ]
+
+        jobs = HonorCampusCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "honor-ai-2027")
+        self.assertEqual(jobs[0].company, "荣耀终端股份有限公司")
+        self.assertEqual(jobs[0].deadline, "长期招聘")
+        self.assertIn("posDetail.html?postId=honor-ai-2027", jobs[0].url)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["form_body"]["recruitType"], 1
+        )
+        self.assertEqual(
+            fetch.call_args_list[1].kwargs["headers"]["Referer"],
+            source["homepage"],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_honor_campus_rejects_changed_official_entry(self, fetch):
+        fetch.return_value = (
+            "<p>荣耀2027届校园招聘</p><a href='/jobs'>应届生</a>"
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "未出现预期校招入口"):
+            HonorCampusCollector(self._honor_source()).collect()
 
     @staticmethod
     def _gdut_page(fragment):

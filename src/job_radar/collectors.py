@@ -4162,6 +4162,39 @@ class HotjobCampusCollector(Collector):
         return jobs
 
 
+class HonorCampusCollector(HotjobCampusCollector):
+    """Validate HONOR's official campaign page before reading campus jobs."""
+
+    def collect(self) -> List[JobPosting]:
+        campaign_url = self.source["campaign_url"]
+        try:
+            campaign_html = fetch_bytes(
+                campaign_url,
+                timeout=int(self.source.get("campaign_timeout", 60)),
+                headers=self.source.get("campaign_headers"),
+            ).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("荣耀招聘官网返回了无效 UTF-8 页面") from exc
+
+        required_text = self.source.get("required_text", "校招入口")
+        expected_portal_url = self.source["expected_portal_url"]
+        if (
+            required_text not in campaign_html
+            or expected_portal_url not in campaign_html
+        ):
+            raise ValueError("荣耀招聘官网未出现预期校招入口，可能已经改版")
+
+        target_campaign_keywords = self.source.get(
+            "target_campaign_keywords", []
+        )
+        if target_campaign_keywords and not self._contains(
+            campaign_html, target_campaign_keywords
+        ):
+            return []
+
+        return super().collect()
+
+
 class GiihgCampusCollector(Collector):
     """Collect campus jobs from Guangzhou Industrial Investment Group."""
 
@@ -5972,6 +6005,7 @@ COLLECTOR_TYPES = {
     "gzrecruit_company": GzRecruitCompanyCollector,
     "hsbc_programme": HsbcProgrammeCollector,
     "hotjob_campus": HotjobCampusCollector,
+    "honor_campus": HonorCampusCollector,
     "iguopin_company": IguopinCompanyCollector,
     "huawei_campus": HuaweiCampusCollector,
     "ibm_entry_level": IbmEntryLevelCollector,
