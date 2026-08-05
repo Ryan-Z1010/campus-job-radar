@@ -16,6 +16,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     BydCampusCollector,
     CampaignWatchCollector,
+    ChinaElectronicsCampusCollector,
     ChinaResourcesCampusCollector,
     ChinaSouthernPowerGridCollector,
     CmbCampusCollector,
@@ -4340,6 +4341,213 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "混入非校招岗位"):
             ChinaResourcesCampusCollector(
                 self._china_resources_source()
+            ).collect()
+
+    @staticmethod
+    def _china_electronics_source():
+        return {
+            "id": "china_electronics_group_campus",
+            "name": "中国电子信息产业集团校园招聘",
+            "type": "china_electronics_campus",
+            "homepage": "https://campus.cec.example.com/",
+            "url": "https://api.cec.example.com/position/search",
+            "detail_api_url_template": (
+                "https://api.cec.example.com/position/find/{id}"
+            ),
+            "detail_url_template": (
+                "https://campus.cec.example.com/positionDetail?id={id}"
+            ),
+            "required_title": "中国电子信息产业集团有限公司招聘",
+            "position_type": 0,
+            "active_status": 5,
+            "company": "中国电子",
+            "company_type": "央企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_title_keywords": ["AI", "智能体", "数据", "软件"],
+            "exclude_title_keywords": ["实习", "硬件"],
+            "exclude_text_keywords": ["2026届", "3年及以上工作经验"],
+            "min_position_no_date": "2026-07-01",
+            "page_size": 2,
+            "max_pages": 3,
+            "education": "校园招聘，学历及毕业时间以官网为准",
+        }
+
+    @staticmethod
+    def _china_electronics_response(data) -> bytes:
+        return json.dumps(
+            {"code": "000000", "message": "success", "data": data},
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _china_electronics_page(records, total, current, pages):
+        return {
+            "records": records,
+            "total": total,
+            "size": 2,
+            "current": current,
+            "orders": [],
+            "pages": pages,
+        }
+
+    @staticmethod
+    def _china_electronics_job(
+        job_id,
+        title,
+        city,
+        position_no,
+        *,
+        org="中电金信数字科技集团股份有限公司",
+        requirements="计算机相关专业本科及以上学历",
+    ):
+        return {
+            "id": job_id,
+            "name": title,
+            "cityName": city,
+            "jobRequirements": requirements,
+            "workNature": "全职",
+            "org": org,
+            "positionSecondOrg": "中电金信",
+            "jobDescription": "开发企业级人工智能与数据平台",
+            "salaryRequirements": "五险一金",
+            "positionNo": position_no,
+        }
+
+    @classmethod
+    def _china_electronics_detail(
+        cls, item, *, position_type=0, status=5
+    ):
+        return {
+            **item,
+            "positionType": position_type,
+            "status": status,
+            "orgName": item["org"],
+            "functionName": "技术研发类",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_electronics_campus_paginates_filters_and_maps_jobs(
+        self, fetch
+    ):
+        ai_job = self._china_electronics_job(
+            "cec-ai", "智能体研发工程师", "北京", "DLS202607310001"
+        )
+        old_job = self._china_electronics_job(
+            "cec-old", "数据开发工程师", "广州", "ZDJX202606300001"
+        )
+        intern_job = self._china_electronics_job(
+            "cec-intern", "数据实习生", "深圳", "ZDJX202607200001"
+        )
+        software_job = self._china_electronics_job(
+            "cec-software",
+            "软件开发工程师",
+            "上海",
+            "ZDJX202608030001",
+        )
+        fetch.side_effect = [
+            (
+                "<title>中国电子信息产业集团有限公司招聘</title>"
+                '<script src="/assets/index-abc123.js"></script>'
+            ).encode("utf-8"),
+            self._china_electronics_response(
+                self._china_electronics_page(
+                    [ai_job, old_job], 4, 1, 2
+                )
+            ),
+            self._china_electronics_response(
+                self._china_electronics_detail(ai_job)
+            ),
+            self._china_electronics_response(
+                self._china_electronics_page(
+                    [intern_job, software_job], 4, 2, 2
+                )
+            ),
+            self._china_electronics_response(
+                self._china_electronics_detail(software_job)
+            ),
+        ]
+
+        jobs = ChinaElectronicsCampusCollector(
+            self._china_electronics_source()
+        ).collect()
+
+        self.assertEqual([job.external_id for job in jobs], ["cec-ai", "cec-software"])
+        self.assertEqual(jobs[0].title, "智能体研发工程师")
+        self.assertEqual(
+            jobs[0].company,
+            "中国电子 · 中电金信数字科技集团股份有限公司",
+        )
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "北京")
+        self.assertEqual(jobs[0].published_at, "2026-07-31")
+        self.assertEqual(jobs[0].education, "计算机相关专业本科及以上学历")
+        self.assertIn("岗位类别：技术研发类", jobs[0].description)
+        self.assertIn("人工智能与数据平台", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://campus.cec.example.com/positionDetail?id=cec-ai",
+        )
+        self.assertEqual(fetch.call_count, 5)
+        first_search = fetch.call_args_list[1]
+        self.assertEqual(first_search.kwargs["method"], "POST")
+        self.assertEqual(first_search.kwargs["json_body"]["positionType"], 0)
+        self.assertEqual(first_search.kwargs["json_body"]["page"], 1)
+        self.assertEqual(first_search.kwargs["json_body"]["size"], 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_electronics_campus_empty_result_is_successful(self, fetch):
+        fetch.side_effect = [
+            (
+                "<title>中国电子信息产业集团有限公司招聘</title>"
+                '<script src="/assets/index-abc123.js"></script>'
+            ).encode("utf-8"),
+            self._china_electronics_response(
+                self._china_electronics_page([], 0, 1, 0)
+            ),
+        ]
+
+        jobs = ChinaElectronicsCampusCollector(
+            self._china_electronics_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_electronics_campus_rejects_changed_portal(self, fetch):
+        fetch.return_value = (
+            '<title>中国电子科技集团有限公司招聘</title>'
+            '<script src="/assets/index-abc123.js"></script>'
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "官网标题与预期不符"):
+            ChinaElectronicsCampusCollector(
+                self._china_electronics_source()
+            ).collect()
+
+        self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_china_electronics_campus_rejects_non_campus_detail(self, fetch):
+        job = self._china_electronics_job(
+            "cec-social", "AI 研发工程师", "北京", "DLS202607310001"
+        )
+        fetch.side_effect = [
+            (
+                "<title>中国电子信息产业集团有限公司招聘</title>"
+                '<script src="/assets/index-abc123.js"></script>'
+            ).encode("utf-8"),
+            self._china_electronics_response(
+                self._china_electronics_page([job], 1, 1, 1)
+            ),
+            self._china_electronics_response(
+                self._china_electronics_detail(job, position_type=1)
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "混入非校招岗位"):
+            ChinaElectronicsCampusCollector(
+                self._china_electronics_source()
             ).collect()
 
     @staticmethod
