@@ -12,6 +12,7 @@ from Crypto.Util.Padding import pad
 from job_radar.collectors import (
     AccentureEarlyCareerCollector,
     BeisenLegacyCampusCollector,
+    BeisenModernCampusCollector,
     BeisenPortalCampaignCollector,
     BydCampusCollector,
     CampaignWatchCollector,
@@ -3916,6 +3917,212 @@ class CollectorTests(unittest.TestCase):
             + json.dumps(payload, ensure_ascii=False)
             + ";</script>"
         ).encode("utf-8")
+
+    @staticmethod
+    def _beisen_modern_homepage(
+        tenant="cmhk", portal_id="cmhk-portal"
+    ) -> bytes:
+        payload = {
+            "PortalId": portal_id,
+            "Pages": [
+                {
+                    "Name": "校园招聘首页",
+                    "Code": "Campus",
+                    "PageType": 0,
+                    "BusinessType": "2",
+                },
+                {
+                    "Name": "校园招聘列表页",
+                    "Code": "CampusList",
+                    "PageType": 2,
+                    "BusinessType": "2",
+                },
+                {
+                    "Name": "社会招聘列表页",
+                    "Code": "SocialList",
+                    "PageType": 2,
+                    "BusinessType": "1",
+                },
+            ],
+            "tenantInfo": {"Name": tenant},
+        }
+        return (
+            "<script>var BSGlobal = "
+            + json.dumps(payload, ensure_ascii=False)
+            + ";</script>"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _beisen_modern_page(total, items) -> bytes:
+        return json.dumps(
+            {
+                "Code": 200,
+                "Message": "operation success",
+                "Count": total,
+                "Data": items,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _beisen_modern_job(
+        job_id,
+        title,
+        location,
+        published_at,
+        duty="",
+        requirement="",
+        org="招商局测试单位",
+        category_id="2",
+    ):
+        return {
+            "Id": job_id,
+            "JobAdId": 123456,
+            "JobAdName": title,
+            "Category": "校园招聘",
+            "CategoryId": category_id,
+            "LocNames": [location],
+            "PostDate": published_at + "T09:30:00",
+            "EndTime": "2026-09-30T00:00:00",
+            "Org": org,
+            "Duty": duty,
+            "Require": requirement,
+        }
+
+    @staticmethod
+    def _beisen_modern_source():
+        return {
+            "id": "china_merchants_group_campus",
+            "name": "招商局集团校园招聘",
+            "type": "beisen_modern_campus",
+            "homepage": "https://cmhk.example.com/campus/jobs",
+            "tenant_name": "cmhk",
+            "portal_id": "cmhk-portal",
+            "company": "招商局集团",
+            "company_type": "央企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "人工智能", "数据", "软件"],
+            "exclude_keywords": ["实习", "销售"],
+            "min_published_at": "2026-06-01",
+            "page_size": 2,
+            "max_pages": 3,
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_modern_campus_paginates_filters_and_maps_jobs(
+        self, fetch
+    ):
+        fetch.side_effect = [
+            self._beisen_modern_homepage(),
+            self._beisen_modern_page(
+                3,
+                [
+                    self._beisen_modern_job(
+                        "flow-ai",
+                        "流程数智管理岗(J31115)",
+                        "广东省·深圳市",
+                        "2026-06-08",
+                        duty="建设 AI 智能体并推动流程数字化",
+                        requirement="熟悉 Python、SQL 和 API 接口",
+                        org="招商局港口（华南）营运中心",
+                    ),
+                    self._beisen_modern_job(
+                        "data-intern",
+                        "数据分析实习生",
+                        "上海市",
+                        "2026-07-01",
+                        duty="数据分析",
+                    ),
+                ],
+            ),
+            self._beisen_modern_page(
+                3,
+                [
+                    self._beisen_modern_job(
+                        "old-ai",
+                        "人工智能工程师",
+                        "北京市",
+                        "2025-09-01",
+                    )
+                ],
+            ),
+        ]
+
+        jobs = BeisenModernCampusCollector(
+            self._beisen_modern_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "flow-ai")
+        self.assertEqual(jobs[0].title, "流程数智管理岗(J31115)")
+        self.assertEqual(jobs[0].company, "招商局集团")
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "广东省·深圳市")
+        self.assertEqual(jobs[0].published_at, "2026-06-08")
+        self.assertEqual(jobs[0].deadline, "2026-09-30")
+        self.assertIn("招商局港口（华南）营运中心", jobs[0].description)
+        self.assertIn("AI 智能体", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://cmhk.example.com/campus/detail?jobAdId=flow-ai",
+        )
+        self.assertEqual(fetch.call_count, 3)
+        first_request = fetch.call_args_list[1]
+        self.assertEqual(first_request.kwargs["method"], "POST")
+        self.assertEqual(
+            first_request.kwargs["json_body"]["Category"], [2]
+        )
+        self.assertEqual(
+            first_request.kwargs["json_body"]["PortalId"], "cmhk-portal"
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_modern_campus_empty_result_is_successful(self, fetch):
+        fetch.side_effect = [
+            self._beisen_modern_homepage(),
+            self._beisen_modern_page(0, []),
+        ]
+
+        jobs = BeisenModernCampusCollector(
+            self._beisen_modern_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_modern_campus_rejects_wrong_tenant(self, fetch):
+        fetch.return_value = self._beisen_modern_homepage(tenant="other")
+
+        with self.assertRaisesRegex(ValueError, "非目标租户"):
+            BeisenModernCampusCollector(
+                self._beisen_modern_source()
+            ).collect()
+
+        self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_beisen_modern_campus_rejects_non_campus_items(self, fetch):
+        fetch.side_effect = [
+            self._beisen_modern_homepage(),
+            self._beisen_modern_page(
+                1,
+                [
+                    self._beisen_modern_job(
+                        "social-ai",
+                        "人工智能工程师",
+                        "深圳市",
+                        "2026-08-01",
+                        category_id="1",
+                    )
+                ],
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "混入非校招岗位"):
+            BeisenModernCampusCollector(
+                self._beisen_modern_source()
+            ).collect()
 
     @staticmethod
     def _beisen_legacy_page(rows, page_links="") -> bytes:
