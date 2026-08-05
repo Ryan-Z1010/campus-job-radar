@@ -5722,6 +5722,333 @@ class BeisenModernCampusCollector(Collector):
         raise ValueError("北森新版校园岗位分页超过配置上限")
 
 
+class ChinaResourcesCampusCollector(Collector):
+    """Collect campus jobs from China Resources' public recruitment site."""
+
+    DEFAULT_API_URL = "https://ssdp.crc.com.cn/ssdp/sys/rf/"
+    PUBLIC_API_CONFIG = {
+        "Api_Version": "1.0",
+        "Api_ID": "crinfo.hrms",
+        "App_Sub_ID": "0006000908YA",
+        "App_Token": "60fe2d19e5ad491f8a02508da3efe532",
+        "Sys_ID": "00060009",
+        "Partner_ID": "00060000",
+        "Sign": "NO_SIGN",
+        "User_Token": "",
+    }
+    WEBSITE_API = "crc.HRMS.rm.websiteView"
+    POSITION_API = "crc.HRMS.rm.synthesizeHomepagePosition"
+
+    @staticmethod
+    def _contains(text: str, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text).lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any) -> str:
+        rendered = str(value or "").strip()
+        if not rendered:
+            return ""
+        return rendered[:10]
+
+    @staticmethod
+    def _decode_response(raw: bytes, label: str) -> Any:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("华润{}接口返回了无效 JSON".format(label)) from exc
+        if not isinstance(payload, dict):
+            raise ValueError("华润{}接口响应结构异常".format(label))
+        response = payload.get("RESPONSE")
+        if not isinstance(response, dict):
+            raise ValueError("华润{}接口缺少 RESPONSE".format(label))
+        if response.get("RETURN_CODE") != "MS000A000":
+            raise ValueError(
+                "华润{}接口失败（RETURN_CODE={}）".format(
+                    label, response.get("RETURN_CODE")
+                )
+            )
+        encoded = response.get("RETURN_DATA")
+        if not isinstance(encoded, str):
+            raise ValueError("华润{}接口缺少 RETURN_DATA".format(label))
+        try:
+            decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise ValueError("华润{}接口数据编码异常".format(label)) from exc
+        try:
+            return json.loads(decoded)
+        except json.JSONDecodeError as exc:
+            raise ValueError("华润{}接口业务数据不是 JSON".format(label)) from exc
+
+    def _api_call(
+        self,
+        api_id: str,
+        method: str,
+        param: Dict[str, Any],
+        label: str,
+    ) -> Any:
+        public_config = dict(self.PUBLIC_API_CONFIG)
+        public_config.update(self.source.get("public_api_config", {}))
+        if "HRMS" not in api_id:
+            raise ValueError("华润公开接口 Api_ID 配置异常")
+        public_config["Api_ID"] = "{}{}".format(
+            public_config["Api_ID"], api_id.split("HRMS", 1)[1]
+        )
+        now = datetime.now(timezone(timedelta(hours=8)))
+        public_config["Time_Stamp"] = "{}:{}".format(
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            now.microsecond // 1000,
+        )
+        ssdp = base64.b64encode(
+            "&".join(
+                "{}={}".format(key, value)
+                for key, value in public_config.items()
+            ).encode("utf-8")
+        ).decode("ascii")
+        request_data = {"biz": {"method": method, "param": param}}
+        request_json = {
+            "base64String": base64.b64encode(
+                json.dumps(
+                    request_data,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).decode("ascii")
+        }
+        api_url = "{}?{}".format(
+            self.source.get("api_url", self.DEFAULT_API_URL),
+            urlencode({"ssdp": ssdp}),
+        )
+        raw = fetch_bytes(
+            api_url,
+            method="POST",
+            json_body=request_json,
+            headers={
+                "Referer": self.source["homepage"],
+                "languageIndex": "0",
+                "homepageConfigId": self.source["website_config_id"],
+            },
+        )
+        return self._decode_response(raw, label)
+
+    def _validate_portal(self) -> Dict[str, Any]:
+        homepage = self.source["homepage"]
+        homepage_body = fetch_bytes(homepage).decode(
+            "utf-8", errors="replace"
+        )
+        native_script = self.source.get(
+            "native_script_url", urljoin(homepage, "indexNative.js")
+        )
+        if "indexNative.js" not in homepage_body:
+            raise ValueError("华润招聘官网未加载预期入口脚本，可能已经改版")
+        native_body = fetch_bytes(
+            native_script, headers={"Referer": homepage}
+        ).decode("utf-8", errors="replace")
+        website_config_id = self.source["website_config_id"]
+        if website_config_id not in native_body:
+            raise ValueError("华润招聘官网默认站点 ID 已变化")
+
+        portal = self._api_call(
+            self.WEBSITE_API,
+            "loadComplexWebsiteStyle",
+            {"id": website_config_id},
+            "官网配置",
+        )
+        if not isinstance(portal, dict):
+            raise ValueError("华润招聘官网配置响应结构异常")
+        website = portal.get("websiteConfig")
+        position = portal.get("positionConfig")
+        if not isinstance(website, dict) or not isinstance(position, dict):
+            raise ValueError("华润招聘官网配置缺少网站或岗位配置")
+        if str(website.get("id")) != website_config_id:
+            raise ValueError("华润招聘官网配置返回了非目标站点")
+        required_name = self.source.get("required_website_name", "华润")
+        if required_name not in str(website.get("websiteName") or ""):
+            raise ValueError("华润招聘官网名称与预期不符")
+        if website.get("configStatus") != 1:
+            raise ValueError("华润招聘官网当前未启用")
+        if str(position.get("complexWsConfigId")) != website_config_id:
+            raise ValueError("华润招聘岗位配置不属于目标站点")
+        return portal
+
+    def _position_url(self, item: Dict[str, Any]) -> str:
+        homepage = self.source["homepage"].rstrip("/") + "/"
+        template = self.source.get(
+            "detail_url_template",
+            homepage
+            + "#/complex/RecruitDetail?id={position_id}"
+            "&comId={website_config_id}&typeId={type_id}",
+        )
+        return template.format(
+            position_id=quote(str(item["pubPositionId"]), safe=""),
+            website_config_id=quote(
+                self.source["website_config_id"], safe=""
+            ),
+            type_id=quote(str(item.get("typeId") or "A02"), safe=""),
+        )
+
+    def _to_job(self, item: Dict[str, Any]) -> JobPosting:
+        brand = str(item.get("brandName") or "").strip()
+        company_descr = str(item.get("companyDescr") or "").strip()
+        department = str(item.get("deptIdDescr") or "").strip()
+        duty = str(item.get("rmJobDuty") or "").strip()
+        requirement = str(item.get("rmJobRqmt") or "").strip()
+        group_name = self.source.get("company", "华润集团")
+        company = (
+            "{} · {}".format(group_name, brand)
+            if brand and brand != group_name
+            else group_name
+        )
+        description = "\n".join(
+            value
+            for value in [
+                "雇主品牌：{}".format(brand) if brand else "",
+                "招聘单位：{}".format(company_descr) if company_descr else "",
+                "招聘部门：{}".format(department) if department else "",
+                "岗位职责：{}".format(duty) if duty else "",
+                "任职要求：{}".format(requirement) if requirement else "",
+            ]
+            if value
+        )
+        education = str(item.get("rmEducationalRqmtDescr") or "").strip()
+        if not education:
+            education = self.source.get(
+                "education", "校园招聘，具体学历要求以岗位详情为准"
+            )
+        values = {
+            "external_id": str(item["pubPositionId"]),
+            "title": str(item["pubPositionName"]).strip(),
+            "company": company,
+            "company_type": self.source.get("company_type", "央企"),
+            "location": str(item.get("locationDescr") or "").strip()
+            or self.source.get("location", "待核对"),
+            "description": description,
+            "education": education,
+            "graduation_years": self.source.get("graduation_years", []),
+            "published_at": self._date(item.get("publishDate")),
+            "deadline": self.source.get(
+                "deadline", "以官方岗位页面为准"
+            ),
+            "url": self._position_url(item),
+            "source_name": self.source["name"],
+        }
+        return JobPosting.from_mapping(values)
+
+    def collect(self) -> List[JobPosting]:
+        self._validate_portal()
+        website_config_id = self.source["website_config_id"]
+        page_size = max(1, min(int(self.source.get("page_size", 100)), 200))
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        campus_type = self.source.get("campus_type", "A02")
+        min_published_at = self.source.get("min_published_at", "")[:10]
+        location_keywords = self.source.get("location_keywords", [])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        include_fields = self.source.get(
+            "include_search_fields", ["pubPositionName", "deptIdDescr"]
+        )
+
+        jobs = []
+        seen_ids = set()
+        page_signatures = set()
+        received_count = 0
+        expected_total = None
+        for page_num in range(1, max_pages + 1):
+            result = self._api_call(
+                self.POSITION_API,
+                "getSynthesizeHomepagePosition",
+                {
+                    "homepageConfigId": website_config_id,
+                    "locationDescr": "",
+                    "industryType": "",
+                    "rmType": campus_type,
+                    "rmWorkYearsRqmt": "",
+                    "rmEducationalRqmt": "",
+                    "keyword": "",
+                    "positionType": "",
+                    "rmBusiness": "",
+                    "pageNum": page_num,
+                    "pageSize": page_size,
+                },
+                "校园岗位",
+            )
+            if not isinstance(result, dict):
+                raise ValueError("华润校园岗位响应结构异常")
+            items = result.get("data")
+            total = result.get("total")
+            if not isinstance(items, list) or not isinstance(total, int):
+                raise ValueError("华润校园岗位响应缺少 data 或 total")
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise ValueError("华润校园岗位分页总数发生变化")
+            if not items and received_count < expected_total:
+                raise ValueError("华润校园岗位分页提前结束")
+
+            page_signature = tuple(
+                str(item.get("pubPositionId") or "")
+                for item in items
+                if isinstance(item, dict)
+            )
+            if items and page_signature in page_signatures:
+                raise ValueError("华润校园岗位接口重复返回同一分页")
+            page_signatures.add(page_signature)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("华润校园岗位列表元素结构异常")
+                external_id = str(item.get("pubPositionId") or "").strip()
+                title = str(item.get("pubPositionName") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("华润校园岗位缺少必要字段")
+                if str(item.get("typeId") or "") != campus_type:
+                    raise ValueError("华润校园岗位接口混入非校招岗位")
+                received_count += 1
+                if external_id in seen_ids:
+                    continue
+                seen_ids.add(external_id)
+
+                published_at = self._date(item.get("publishDate"))
+                if min_published_at and (
+                    not published_at or published_at < min_published_at
+                ):
+                    continue
+                location = str(item.get("locationDescr") or "").strip()
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                include_text = " ".join(
+                    str(item.get(field) or "") for field in include_fields
+                )
+                if include_keywords and not self._contains(
+                    include_text, include_keywords
+                ):
+                    continue
+                exclude_text = " ".join(
+                    str(item.get(field) or "")
+                    for field in (
+                        "pubPositionName",
+                        "brandName",
+                        "companyDescr",
+                        "deptIdDescr",
+                        "rmJobDuty",
+                        "rmJobRqmt",
+                    )
+                )
+                if self._contains(exclude_text, exclude_keywords):
+                    continue
+                jobs.append(self._to_job(item))
+
+            if received_count >= expected_total:
+                return jobs
+
+        raise ValueError("华润校园岗位分页超过配置上限")
+
+
 class _BeisenLegacyJobListParser(HTMLParser):
     """Parse the server-rendered job table used by older Beisen portals."""
 
@@ -6226,6 +6553,7 @@ COLLECTOR_TYPES = {
     "campaign_watch": CampaignWatchCollector,
     "cmb_campus": CmbCampusCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
+    "china_resources_campus": ChinaResourcesCampusCollector,
     "cvte_campus": CvteCampusCollector,
     "fixture_json": FixtureJsonCollector,
     "gdut_campus_notice": GdutCampusNoticeCollector,
