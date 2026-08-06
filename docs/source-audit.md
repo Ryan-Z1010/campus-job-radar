@@ -1476,3 +1476,27 @@ TCL 官方校园招聘页仍使用旧版 Hotjob 公共接口。页面企业筛�
 岗位级来源统一限定广州、上海、深圳、北京，并只保留 AI、人工智能、大模型、
 算法、数据、软件、数字化、信息化、云计算与信息安全等方向。对尚未公布海外
 毕业时间窗口的来源，后续命中仍标为“待核对”，不会自行断言用户一定符合。
+
+## 已启用：最后十家官方校招入口
+
+2026-08-06 完成目标公司池最后十家的官方入口核验，全部写入
+`configs/sources.json`。本批次采用公开页面启动监控，正式 2027 届标识出现后才
+生成提醒；岗位明细仍需进入企业官方页面逐岗核对。
+
+| 来源 | 官方入口 | 当日处理 | 说明 |
+|---|---|---|---|
+| SAP中国 | `https://jobs.sap.com/go/China/8807101/` | 已启用 `campaign_watch` | SAP公开 China 职位列表可访问；监控2027校园招聘标识 |
+| 特斯拉中国 | `https://www.tesla.com/careers` | 已启用 `campaign_watch` | Careers 页面按地区可能返回403；不绕过限制，异常进入审计结果 |
+| 国家电网 | `https://zhaopin.sgcc.com.cn/` | 已启用 `campaign_watch` | 官方唯一人力资源招聘平台；自动化请求可能返回412 |
+| 中国石油 | `https://trxf.cnpc.com.cn/content/h/content_44239.shtml` | 已启用 `campaign_watch` | 先监控中国石油官方域名下公开招聘公告，中央报名平台异常时不静默伪造岗位 |
+| 中国石化 | `http://job.sinopec.com/` | 已启用 `campaign_watch` | 官方毕业生招聘网站，排除实习、社招和录用公示 |
+| 中国海油 | `https://cnooc.zhaopin.com/notice/index.html` | 已启用 `campaign_watch` | 中国海油官方招聘平台公开公告页，可区分旧届与2027届 |
+| 百度 | `https://talent.baidu.com/jobs/campus` | 已启用 `campaign_watch` | 官方校园招聘页已公开2027届标识；不复制岗位接口会话 |
+| 字节跳动 | `https://jobs.bytedance.com/campus/` | 已启用 `campaign_watch` | 前端校园招聘页只读取公开HTML，不模拟签名请求 |
+| 京东 | `https://zhaopin.jd.com/` | 已启用 `campaign_watch` | 官方招聘页同时承载校园与社会招聘，只匹配2027正式校招标识 |
+| 美团 | `https://zhaopin.meituan.com/` | 已启用 `campaign_watch` | 官方招聘页同时承载校园与社会招聘，只匹配2027正式校招标识 |
+
+本批次在本地审计时，SAP、Sinopec、中国海油、百度、字节跳动、京东和美团返回
+200；Tesla Careers 返回403、国家电网平台返回412、中国石油招聘域名返回502，均
+按“官方访问限制/网关异常”记录，不以空结果掩盖故障。后续 GitHub Actions 会继续
+每日重试并在邮件报告中列出来源错误。
