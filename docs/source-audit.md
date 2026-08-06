@@ -1500,3 +1500,26 @@ TCL 官方校园招聘页仍使用旧版 Hotjob 公共接口。页面企业筛�
 200；Tesla Careers 返回403、国家电网平台返回412、中国石油招聘域名返回502，均
 按“官方访问限制/网关异常”记录，不以空结果掩盖故障。后续 GitHub Actions 会继续
 每日重试并在邮件报告中列出来源错误。
+
+## 已启用：新增十家央企官方校招入口
+
+2026-08-07 继续扩充目标公司池，新增以下10家不重复央企。全部采用企业官网、企业指定
+招聘门户或企业公告明确指定的校招入口，统一只监控公开的2027届校招启动标识；岗位详情
+仍需进入官方页面逐岗核对，海外毕业时间和专业限制不会由监控器自行推断。
+
+| 来源 | 官方入口 | 监控方式 | 当日核验 |
+|---|---|---|---|
+| 中国建筑集团有限公司 | `https://recruit.cscec.com/` | `campaign_watch` | 200；页面标题为“中国建筑校园招聘” |
+| 中国国家铁路集团有限公司 | `https://rczp.china-railway.com.cn/` | `campaign_watch` | 200；页面明确为中国铁路人才招聘网 |
+| 中国中车集团有限公司 | `https://crrc.hotjob.cn/` | `campaign_watch` | 200；中国中车招聘云平台 |
+| 中国邮政集团有限公司 | `https://chinapost2026.zhaopin.com/sky/index.html` | `campaign_watch` | 200；官方公告指定的2026联招门户，后续年度需切换地址 |
+| 中国人民保险集团股份有限公司 | `https://picc.zhiye.com/custom/campus` | `campaign_watch` | 200；页面标题为“中国人民保险招聘” |
+| 国家电力投资集团有限公司 | `https://zhaopin.spic.com.cn/` | `campaign_watch` | 503；官方招聘域名可确认，网关异常保留为来源错误 |
+| 中国核工业集团有限公司 | `https://cnnc.zhiye.com/xiaoyuan` | `campaign_watch` | 200；页面标题为“中核人才招聘网” |
+| 中国广核集团有限公司 | `https://cgn.hotjob.cn/` | `campaign_watch` | 200；页面标题为“中广核招聘官网” |
+| 国家能源投资集团有限责任公司 | `https://zhaopin.chnenergy.com.cn/` | `campaign_watch` | 200；首页含“校园招聘”入口 |
+| 中国华能集团有限公司 | `https://www.chng.com.cn/index.html` | `campaign_watch` | 200；集团官网含“招聘信息”入口 |
+
+本批次不绕过登录、验证码、个人 Cookie、访问控制或招聘平台签名。中国邮政当前页面
+仍为上一年度联招门户，国家电投当前返回503，均已在配置备注与运行报告中明确记录；后续
+每次工作流运行继续重试，页面恢复或切换到2027入口后再生成提醒。
