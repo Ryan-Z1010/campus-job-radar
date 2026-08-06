@@ -6373,7 +6373,7 @@ class ChinaElectronicsCampusCollector(Collector):
 
 
 class ShenzhenInvestmentHoldingsCollector(Collector):
-    """Collect campus jobs from Shenzhen SASAC's public Elite portal."""
+    """Collect one company's campus jobs from Shenzhen SASAC's Elite portal."""
 
     PUBLIC_KEY = (
         "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArBl1wJJsfl2LAw1X"
@@ -6429,7 +6429,11 @@ class ShenzhenInvestmentHoldingsCollector(Collector):
             == self.source["company_id"]
         ]
         if len(matches) != 1:
-            raise ValueError("菁英聚鹏城门户未唯一匹配深圳投控")
+            raise ValueError(
+                "菁英聚鹏城门户未唯一匹配目标企业：{}".format(
+                    self.source["required_company_name"]
+                )
+            )
         company = matches[0]
         if (
             str(company.get("displayName") or "")
@@ -6438,7 +6442,11 @@ class ShenzhenInvestmentHoldingsCollector(Collector):
             != self.source["tenant_id"]
             or str(company.get("companyPropDsc") or "") != "国企"
         ):
-            raise ValueError("菁英聚鹏城门户返回了非目标深圳投控企业")
+            raise ValueError(
+                "菁英聚鹏城门户返回了非目标企业：{}".format(
+                    self.source["required_company_name"]
+                )
+            )
 
     def _encrypt_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         plaintext = json.dumps(
@@ -6586,7 +6594,9 @@ class ShenzhenInvestmentHoldingsCollector(Collector):
         posting = detail["companyRecruitLib"]
         company = detail["company"]
         member = str(company.get("displayName") or "").strip()
-        group = self.source.get("company", "深圳投控")
+        group = self.source.get(
+            "company", self.source["required_company_name"]
+        )
         company_name = (
             "{} · {}".format(group, member)
             if member and member != group

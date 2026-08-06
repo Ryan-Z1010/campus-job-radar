@@ -4791,12 +4791,40 @@ class CollectorTests(unittest.TestCase):
             ensure_ascii=False,
         ).encode("utf-8")
 
-        with self.assertRaisesRegex(ValueError, "非目标深圳投控企业"):
+        with self.assertRaisesRegex(
+            ValueError, "非目标企业：深圳市投资控股有限公司"
+        ):
             ShenzhenInvestmentHoldingsCollector(
                 self._sihc_source()
             ).collect()
 
         self.assertEqual(fetch.call_count, 1)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_szgzw_collector_supports_another_target_company(self, fetch):
+        source = self._sihc_source()
+        source.update(
+            {
+                "id": "shenzhen_metro_campus",
+                "name": "深圳地铁校园招聘",
+                "company_id": "metro-parent",
+                "required_company_name": "深圳市地铁集团有限公司",
+                "company": "深圳地铁集团",
+            }
+        )
+        portal = self._sihc_portal("深圳市地铁集团有限公司")
+        portal["listCompany"][0]["companyId"] = "metro-parent"
+        page = self._sihc_page([], 0, 0)
+        page["params"]["companyId"] = "metro-parent"
+        fetch.side_effect = [
+            json.dumps(portal, ensure_ascii=False).encode("utf-8"),
+            self._sihc_envelope(page),
+        ]
+
+        jobs = ShenzhenInvestmentHoldingsCollector(source).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
 
     @staticmethod
     def _beisen_legacy_page(rows, page_links="") -> bytes:
