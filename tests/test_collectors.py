@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import html
 import json
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import pad, unpad
 
 from job_radar.collectors import (
     AccentureEarlyCareerCollector,
@@ -40,6 +41,7 @@ from job_radar.collectors import (
     PwcGraduateCampaignCollector,
     SfTechCampusCollector,
     SheinCampusCollector,
+    ShenzhenInvestmentHoldingsCollector,
     TencentCampusCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
@@ -4549,6 +4551,252 @@ class CollectorTests(unittest.TestCase):
             ChinaElectronicsCampusCollector(
                 self._china_electronics_source()
             ).collect()
+
+    @staticmethod
+    def _sihc_source():
+        return {
+            "id": "shenzhen_investment_holdings_campus",
+            "name": "深圳投控校园招聘",
+            "type": "shenzhen_investment_holdings",
+            "homepage": "https://jyjpc.iucai.example.com/",
+            "portal_data_url": (
+                "https://api.szhr.example.com/portal/data.json"
+            ),
+            "url": "https://api.szhr.example.com/jobs/list",
+            "detail_url": "https://api.szhr.example.com/recruit/getxz",
+            "detail_url_template": (
+                "https://jyjpc.iucai.example.com/#/jobDetail"
+                "?recruitId={recruit_id}&companyId={company_id}"
+                "&tenantId={tenant_id}"
+            ),
+            "tenant_id": "tenant-szgzw",
+            "tenant_name": "深圳市人民政府国有资产监督管理委员会",
+            "company_id": "sihc-parent",
+            "required_company_name": "深圳市投资控股有限公司",
+            "campus_recruit_type": "2",
+            "company": "深圳投控",
+            "company_type": "国企",
+            "location_keywords": ["深圳"],
+            "include_title_keywords": ["AI", "数据", "软件", "测试"],
+            "exclude_title_keywords": ["实习", "销售"],
+            "exclude_text_keywords": ["2026届", "3年以上工作经验"],
+            "work_years": ["应届生", "不限"],
+            "work_natures": ["全职"],
+            "min_published_at": "2026-07-01",
+            "page_size": 2,
+            "max_pages": 3,
+            "education": "校园招聘，毕业资格以官网为准",
+        }
+
+    @staticmethod
+    def _sihc_portal(company_name="深圳市投资控股有限公司"):
+        return {
+            "tenant": {
+                "tenantId": "tenant-szgzw",
+                "tenantName": "深圳市人民政府国有资产监督管理委员会",
+            },
+            "listCompany": [
+                {
+                    "companyId": "sihc-parent",
+                    "displayName": company_name,
+                    "tenantId": "tenant-szgzw",
+                    "companyPropDsc": "国企",
+                }
+            ],
+        }
+
+    @staticmethod
+    def _sihc_envelope(data):
+        return json.dumps(
+            {
+                "status": "success",
+                "success": True,
+                "message": "ok",
+                "data": json.dumps(data, ensure_ascii=False),
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _sihc_page(items, total, page_index):
+        return {
+            "data": items,
+            "pageIndex": page_index,
+            "pageSize": 2,
+            "params": {
+                "companyId": "sihc-parent",
+                "companyType": "1",
+                "recruitType": "2",
+            },
+            "total": str(total),
+        }
+
+    @staticmethod
+    def _sihc_job(
+        job_id,
+        title,
+        *,
+        company="深圳市智慧产业有限公司",
+        child_company_id="sihc-child",
+        work_years="应届生",
+    ):
+        return {
+            "recruitLibId": job_id,
+            "id": job_id,
+            "jobTitle": title,
+            "displayName": company,
+            "companyId": "sihc-parent",
+            "CR_COMPANY_ID": child_company_id,
+            "workCityDsc": "广东省深圳市南山区",
+            "jobTypeDsc": "全职",
+            "workYearsDsc": work_years,
+            "requireEduDsc": "硕士研究生",
+            "startDate": "2026-08-05 00:00:00",
+            "createDt": "2026-08-05 09:30:00",
+            "endDate": "2026-10-31 00:00:00",
+            "pubState": 1,
+        }
+
+    @classmethod
+    def _sihc_detail(
+        cls,
+        item,
+        *,
+        recruit_type="2",
+        job_req="计算机相关专业，面向应届毕业生",
+    ):
+        posting = {
+            **item,
+            "companyId": item["CR_COMPANY_ID"],
+            "recruitType": recruit_type,
+            "jobType": "01",
+            "positionDsc": "数据开发工程师",
+            "jobResp": "建设企业数据平台并开发智能分析能力",
+            "jobReq": job_req,
+        }
+        return {
+            "companyRecruitLib": posting,
+            "company": {
+                "companyId": item["CR_COMPANY_ID"],
+                "displayName": item["displayName"],
+                "cityDsc": "广东省深圳市南山区",
+            },
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sihc_paginates_filters_campus_jobs_and_encrypts_requests(
+        self, fetch
+    ):
+        data_job = self._sihc_job("sihc-data", "数据开发工程师")
+        social_job = self._sihc_job(
+            "sihc-social", "平台测试岗", work_years="5-10年"
+        )
+        intern_job = self._sihc_job("sihc-intern", "AI 实习生")
+        fetch.side_effect = [
+            json.dumps(self._sihc_portal(), ensure_ascii=False).encode("utf-8"),
+            self._sihc_envelope(
+                self._sihc_page([data_job, social_job], 3, 0)
+            ),
+            self._sihc_envelope(self._sihc_detail(data_job)),
+            self._sihc_envelope(
+                self._sihc_detail(social_job, recruit_type="3")
+            ),
+            self._sihc_envelope(
+                self._sihc_page([intern_job], 3, 1)
+            ),
+        ]
+
+        with patch(
+            "job_radar.collectors.secrets.token_hex",
+            return_value="0123456789abcdef0123456789abcdef",
+        ), patch("job_radar.collectors.time.time", return_value=1234.567):
+            jobs = ShenzhenInvestmentHoldingsCollector(
+                self._sihc_source()
+            ).collect()
+
+        self.assertEqual([job.external_id for job in jobs], ["sihc-data"])
+        self.assertEqual(jobs[0].title, "数据开发工程师")
+        self.assertEqual(
+            jobs[0].company,
+            "深圳投控 · 深圳市智慧产业有限公司",
+        )
+        self.assertEqual(jobs[0].company_type, "国企")
+        self.assertEqual(jobs[0].location, "广东省深圳市南山区")
+        self.assertEqual(jobs[0].published_at, "2026-08-05")
+        self.assertEqual(jobs[0].deadline, "2026-10-31")
+        self.assertIn("硕士研究生", jobs[0].education)
+        self.assertIn("所属系统企业", jobs[0].description)
+        self.assertIn("企业数据平台", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://jyjpc.iucai.example.com/#/jobDetail"
+            "?recruitId=sihc-data&companyId=sihc-parent"
+            "&tenantId=tenant-szgzw",
+        )
+        self.assertEqual(fetch.call_count, 5)
+
+        encrypted_body = fetch.call_args_list[1].kwargs["json_body"]
+        self.assertEqual(set(encrypted_body), {"t", "e", "s", "k"})
+        self.assertEqual(encrypted_body["t"], 1234567)
+        key = b"0123456789abcdef0123456789abcdef"
+        plaintext = unpad(
+            AES.new(key, AES.MODE_ECB).decrypt(
+                base64.b64decode(encrypted_body["e"])
+            ),
+            AES.block_size,
+        ).decode("utf-8")
+        self.assertEqual(
+            json.loads(plaintext),
+            {
+                "pageIndex": 0,
+                "pageSize": 2,
+                "params": {"companyId": "sihc-parent"},
+            },
+        )
+        expected_signature = hashlib.md5(
+            (
+                plaintext
+                + "1234567"
+                + "0123456789abcdef0123456789abcdef"
+            ).encode("utf-8")
+        ).hexdigest().upper()
+        self.assertEqual(encrypted_body["s"], expected_signature)
+        self.assertEqual(len(base64.b64decode(encrypted_body["k"])), 256)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sihc_excludes_previous_cycle_detail(self, fetch):
+        old_job = self._sihc_job("sihc-old", "AI 算法工程师")
+        fetch.side_effect = [
+            json.dumps(self._sihc_portal(), ensure_ascii=False).encode("utf-8"),
+            self._sihc_envelope(self._sihc_page([old_job], 1, 0)),
+            self._sihc_envelope(
+                self._sihc_detail(
+                    old_job,
+                    job_req="仅面向2026届毕业生，须于2026年7月前毕业",
+                )
+            ),
+        ]
+
+        jobs = ShenzhenInvestmentHoldingsCollector(
+            self._sihc_source()
+        ).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 3)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_sihc_rejects_wrong_portal_company(self, fetch):
+        fetch.return_value = json.dumps(
+            self._sihc_portal("深圳控股有限公司"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "非目标深圳投控企业"):
+            ShenzhenInvestmentHoldingsCollector(
+                self._sihc_source()
+            ).collect()
+
+        self.assertEqual(fetch.call_count, 1)
 
     @staticmethod
     def _beisen_legacy_page(rows, page_links="") -> bytes:

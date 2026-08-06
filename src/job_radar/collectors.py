@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import hashlib
 import json
 import re
+import secrets
+import time
 import zlib
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
@@ -20,8 +23,9 @@ from urllib.request import (
     urlopen,
 )
 
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from Crypto.Util.Padding import pad, unpad
 
 from .models import JobPosting
 from .network import urlopen_with_retry
@@ -6368,6 +6372,381 @@ class ChinaElectronicsCampusCollector(Collector):
         raise ValueError("中国电子校园岗位分页超过配置上限")
 
 
+class ShenzhenInvestmentHoldingsCollector(Collector):
+    """Collect campus jobs from Shenzhen SASAC's public Elite portal."""
+
+    PUBLIC_KEY = (
+        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArBl1wJJsfl2LAw1X"
+        "kLzr1ON1bYAIfAIWCYBUm+GLIOtJxjluRdxwNG6jLtx8b+fns7gBJvYBLs8J"
+        "63szC2+OSp2Z9qluHPKad14w+nJP7r0Nk2jAeuVy47zapYdlKbMRU6LeEvsL"
+        "6dm6yy78aqrNedBznEH3zeqfq+B7rcg9t+mYrnRV/Nsbdi0xJmUEmh6ziGdW"
+        "RPfOL9lI5YFynqZ3bK3WjYkbFkakPdhOR8YiPdbaqgcYFe4/n8Qcov6/80v"
+        "SF6BKS0YqI+NNHH4XmrbH3mAW70lfM9eyBA/ynFd/LF9/Z+6LGF11U4dDlHO"
+        "w4wYqAGUIDVNRnn2Dl3nMlobvwwIDAQAB"
+    )
+
+    @staticmethod
+    def _contains(text: Any, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text or "").lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any) -> str:
+        text = str(value or "").strip()
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})", text)
+        return match.group(1) if match else ""
+
+    def _validate_portal(self) -> None:
+        try:
+            payload = json.loads(
+                fetch_bytes(self.source["portal_data_url"]).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("菁英聚鹏城门户返回了无效初始化数据") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("菁英聚鹏城门户初始化数据结构异常")
+
+        tenant = payload.get("tenant")
+        companies = payload.get("listCompany")
+        if not isinstance(tenant, dict) or not isinstance(companies, list):
+            raise ValueError("菁英聚鹏城门户缺少租户或企业列表")
+        if (
+            str(tenant.get("tenantId") or "")
+            != self.source["tenant_id"]
+            or str(tenant.get("tenantName") or "")
+            != self.source["tenant_name"]
+        ):
+            raise ValueError("菁英聚鹏城门户租户与预期不符")
+
+        matches = [
+            item
+            for item in companies
+            if isinstance(item, dict)
+            and str(item.get("companyId") or "")
+            == self.source["company_id"]
+        ]
+        if len(matches) != 1:
+            raise ValueError("菁英聚鹏城门户未唯一匹配深圳投控")
+        company = matches[0]
+        if (
+            str(company.get("displayName") or "")
+            != self.source["required_company_name"]
+            or str(company.get("tenantId") or "")
+            != self.source["tenant_id"]
+            or str(company.get("companyPropDsc") or "") != "国企"
+        ):
+            raise ValueError("菁英聚鹏城门户返回了非目标深圳投控企业")
+
+    def _encrypt_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        plaintext = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        aes_key = secrets.token_hex(16)
+        timestamp = int(time.time() * 1000)
+        encrypted = AES.new(
+            aes_key.encode("utf-8"), AES.MODE_ECB
+        ).encrypt(pad(plaintext.encode("utf-8"), AES.block_size))
+        signature = hashlib.md5(
+            (plaintext + str(timestamp) + aes_key).encode("utf-8")
+        ).hexdigest().upper()
+        public_key = RSA.import_key(base64.b64decode(self.PUBLIC_KEY))
+        encrypted_key = PKCS1_v1_5.new(public_key).encrypt(
+            aes_key.encode("utf-8")
+        )
+        return {
+            "t": timestamp,
+            "e": base64.b64encode(encrypted).decode("ascii"),
+            "s": signature,
+            "k": base64.b64encode(encrypted_key).decode("ascii"),
+        }
+
+    def _post(
+        self, url: str, payload: Dict[str, Any], label: str
+    ) -> Dict[str, Any]:
+        raw = fetch_bytes(
+            url,
+            method="POST",
+            json_body=self._encrypt_payload(payload),
+            headers={
+                "Accept": "application/json",
+                "Origin": self.source.get(
+                    "origin", "https://jyjpc.iucai.com.cn"
+                ),
+                "Referer": self.source.get(
+                    "homepage", "https://jyjpc.iucai.com.cn/"
+                ),
+                "sourceKey": "ELITE_PC",
+                "x-Requested-With": "XMLHttpRequest",
+            },
+        )
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "菁英聚鹏城{}接口返回了无效 JSON".format(label)
+            ) from exc
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("status") != "success"
+            or envelope.get("success") is not True
+            or not isinstance(envelope.get("data"), (str, dict))
+        ):
+            raise ValueError("菁英聚鹏城{}接口响应异常".format(label))
+        data = envelope["data"]
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "菁英聚鹏城{}接口数据结构异常".format(label)
+                ) from exc
+        if not isinstance(data, dict):
+            raise ValueError("菁英聚鹏城{}接口数据结构异常".format(label))
+        return data
+
+    def _list_page(self, page_index: int, page_size: int) -> Dict[str, Any]:
+        return self._post(
+            self.source["url"],
+            {
+                "pageIndex": page_index,
+                "pageSize": page_size,
+                "params": {"companyId": self.source["company_id"]},
+            },
+            "岗位列表",
+        )
+
+    def _detail(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        detail = self._post(
+            self.source["detail_url"],
+            {"recruitId": str(item["recruitLibId"])},
+            "岗位详情",
+        )
+        posting = detail.get("companyRecruitLib")
+        company = detail.get("company")
+        if not isinstance(posting, dict) or not isinstance(company, dict):
+            raise ValueError("菁英聚鹏城岗位详情缺少岗位或企业信息")
+        external_id = str(item["recruitLibId"])
+        if (
+            str(posting.get("recruitLibId") or posting.get("id") or "")
+            != external_id
+            or str(posting.get("jobTitle") or "")
+            != str(item.get("jobTitle") or "")
+            or str(posting.get("displayName") or "")
+            != str(item.get("displayName") or "")
+        ):
+            raise ValueError("菁英聚鹏城岗位列表与详情不一致")
+        child_company_id = str(item.get("CR_COMPANY_ID") or "")
+        if (
+            not child_company_id
+            or str(posting.get("companyId") or "") != child_company_id
+            or str(company.get("companyId") or "") != child_company_id
+            or str(company.get("displayName") or "")
+            != str(item.get("displayName") or "")
+        ):
+            raise ValueError("菁英聚鹏城岗位所属企业不一致")
+        return detail
+
+    def _candidate(self, item: Dict[str, Any]) -> bool:
+        title = str(item.get("jobTitle") or "").strip()
+        position = str(item.get("positionDsc") or "").strip()
+        location = str(item.get("workCityDsc") or "").strip()
+        if self.source.get("location_keywords") and not self._contains(
+            location, self.source["location_keywords"]
+        ):
+            return False
+        searchable = " ".join([title, position])
+        if self.source.get("include_title_keywords") and not self._contains(
+            searchable, self.source["include_title_keywords"]
+        ):
+            return False
+        if self._contains(
+            searchable, self.source.get("exclude_title_keywords", [])
+        ):
+            return False
+        if str(item.get("jobTypeDsc") or "") not in self.source.get(
+            "work_natures", ["全职"]
+        ):
+            return False
+        published_at = self._date(
+            item.get("startDate") or item.get("createDt")
+        )
+        minimum = str(self.source.get("min_published_at") or "")[:10]
+        if minimum and not published_at:
+            raise ValueError("菁英聚鹏城候选岗位缺少可核验发布日期")
+        return not minimum or published_at >= minimum
+
+    def _to_job(
+        self, item: Dict[str, Any], detail: Dict[str, Any]
+    ) -> JobPosting:
+        posting = detail["companyRecruitLib"]
+        company = detail["company"]
+        member = str(company.get("displayName") or "").strip()
+        group = self.source.get("company", "深圳投控")
+        company_name = (
+            "{} · {}".format(group, member)
+            if member and member != group
+            else group
+        )
+        requirements = str(posting.get("jobReq") or "").strip()
+        responsibilities = str(posting.get("jobResp") or "").strip()
+        position = str(posting.get("positionDsc") or "").strip()
+        description = "\n".join(
+            value
+            for value in [
+                "所属系统企业：{}".format(member) if member else "",
+                "岗位类别：{}".format(position) if position else "",
+                "岗位职责：{}".format(responsibilities)
+                if responsibilities
+                else "",
+                "任职要求：{}".format(requirements)
+                if requirements
+                else "",
+            ]
+            if value
+        )
+        education = str(posting.get("requireEduDsc") or "").strip()
+        qualification = self.source.get("education", "")
+        if qualification:
+            education = "；".join(
+                value for value in [education, qualification] if value
+            )
+        all_text = " ".join(
+            [str(posting.get("jobTitle") or ""), requirements, responsibilities]
+        )
+        graduation_years = [2027] if "2027届" in all_text else []
+        external_id = str(posting["recruitLibId"])
+        return JobPosting.from_mapping(
+            {
+                "external_id": external_id,
+                "title": str(posting["jobTitle"]).strip(),
+                "company": company_name,
+                "company_type": self.source.get("company_type", "国企"),
+                "location": str(item.get("workCityDsc") or "").strip()
+                or str(company.get("cityDsc") or "").strip()
+                or self.source.get("location", "待核对"),
+                "description": description,
+                "education": education,
+                "graduation_years": graduation_years,
+                "published_at": self._date(
+                    posting.get("startDate") or posting.get("createDt")
+                ),
+                "deadline": self._date(posting.get("endDate"))
+                or self.source.get("deadline", "以官方岗位页面为准"),
+                "url": self.source["detail_url_template"].format(
+                    recruit_id=quote(external_id, safe=""),
+                    company_id=quote(self.source["company_id"], safe=""),
+                    tenant_id=quote(self.source["tenant_id"], safe=""),
+                ),
+                "source_name": self.source["name"],
+            }
+        )
+
+    def collect(self) -> List[JobPosting]:
+        self._validate_portal()
+        page_size = max(1, min(int(self.source.get("page_size", 100)), 100))
+        max_pages = max(1, int(self.source.get("max_pages", 10)))
+        expected_total = None
+        received_count = 0
+        seen_ids = set()
+        page_signatures = set()
+        jobs = []
+
+        for page_index in range(max_pages):
+            data = self._list_page(page_index, page_size)
+            items = data.get("data")
+            params = data.get("params")
+            try:
+                total = int(data.get("total"))
+                returned_page = int(data.get("pageIndex"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("菁英聚鹏城岗位分页字段异常") from exc
+            if (
+                not isinstance(items, list)
+                or not isinstance(params, dict)
+                or returned_page != page_index
+                or str(params.get("companyId") or "")
+                != self.source["company_id"]
+                or str(params.get("companyType") or "") != "1"
+                or str(params.get("recruitType") or "")
+                != str(self.source.get("campus_recruit_type", "2"))
+            ):
+                raise ValueError("菁英聚鹏城岗位分页或筛选条件异常")
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise ValueError("菁英聚鹏城岗位分页总数发生变化")
+            if not items and received_count < expected_total:
+                raise ValueError("菁英聚鹏城岗位分页提前结束")
+
+            signature = tuple(
+                str(item.get("recruitLibId") or "")
+                for item in items
+                if isinstance(item, dict)
+            )
+            if items and signature in page_signatures:
+                raise ValueError("菁英聚鹏城岗位重复返回同一分页")
+            page_signatures.add(signature)
+            received_count += len(items)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("菁英聚鹏城岗位列表元素结构异常")
+                external_id = str(item.get("recruitLibId") or "").strip()
+                title = str(item.get("jobTitle") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("菁英聚鹏城岗位缺少必要字段")
+                if external_id in seen_ids:
+                    raise ValueError("菁英聚鹏城岗位出现重复岗位 ID")
+                seen_ids.add(external_id)
+                if not self._candidate(item):
+                    continue
+
+                detail = self._detail(item)
+                posting = detail["companyRecruitLib"]
+                if (
+                    str(posting.get("recruitType") or "")
+                    != str(self.source.get("campus_recruit_type", "2"))
+                    or str(posting.get("pubState") or "") != "1"
+                ):
+                    continue
+                text = " ".join(
+                    str(posting.get(field) or "")
+                    for field in (
+                        "jobTitle",
+                        "positionDsc",
+                        "jobReq",
+                        "jobResp",
+                        "workYearsDsc",
+                    )
+                )
+                if self._contains(
+                    text, self.source.get("exclude_text_keywords", [])
+                ):
+                    continue
+                allowed_experience = self.source.get(
+                    "work_years", ["应届生", "不限"]
+                )
+                if (
+                    allowed_experience
+                    and str(posting.get("workYearsDsc") or "")
+                    not in allowed_experience
+                ):
+                    continue
+                jobs.append(self._to_job(item, detail))
+
+            if received_count >= expected_total:
+                if received_count != expected_total:
+                    raise ValueError("菁英聚鹏城岗位数量超过接口总数")
+                return jobs
+
+        raise ValueError("菁英聚鹏城岗位分页超过配置上限")
+
+
 class _BeisenLegacyJobListParser(HTMLParser):
     """Parse the server-rendered job table used by older Beisen portals."""
 
@@ -6893,6 +7272,7 @@ COLLECTOR_TYPES = {
     "pingan_campus": PinganCampusCollector,
     "pwc_graduate_campaign": PwcGraduateCampaignCollector,
     "shein_campus": SheinCampusCollector,
+    "shenzhen_investment_holdings": ShenzhenInvestmentHoldingsCollector,
     "sf_tech_campus": SfTechCampusCollector,
     "tencent_campus": TencentCampusCollector,
     "html_links": HtmlLinksCollector,
