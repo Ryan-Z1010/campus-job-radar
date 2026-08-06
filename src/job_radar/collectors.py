@@ -4166,6 +4166,303 @@ class HotjobCampusCollector(Collector):
         return jobs
 
 
+class TclHotjobCampusCollector(Collector):
+    """Collect one TCL business unit from its legacy public Hotjob portal."""
+
+    @staticmethod
+    def _contains(text: Any, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text or "").lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _date(value: Any, label: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})", text)
+        if not match:
+            raise ValueError("TCL华星岗位{}格式异常".format(label))
+        return match.group(1)
+
+    def _validate_portal(self) -> None:
+        body = fetch_bytes(self.source["homepage"]).decode(
+            "utf-8", errors="replace"
+        )
+        for keyword in self.source.get(
+            "portal_required_keywords", ["TCL", "校园招聘"]
+        ):
+            if keyword not in body:
+                raise ValueError("TCL校招门户缺少预期标识，可能已经改版")
+        company_part = str(self.source["company_part"])
+        expected_company = self.source["required_company_name"]
+        if company_part not in body or expected_company not in body:
+            raise ValueError("TCL校招门户未出现目标事业部")
+
+    def _page(self, page: int) -> Dict[str, Any]:
+        recruit_type = int(self.source.get("recruit_type", 1))
+        query = urlencode(
+            {
+                "positionType": "",
+                "comPart": self.source["company_part"],
+                "sicCorpCode": "",
+                "brandCode": self.source.get("brand_code", 1),
+                "releaseTime": "",
+                "trademark": self.source.get("trademark", 1),
+                "useForm": "",
+                "recruitType": recruit_type,
+                "projectId": "",
+                "lanType": self.source.get("language_type", 1),
+                "positionName": "",
+                "workPlace": "",
+                "page": page,
+                "site": "",
+                "keyWord": "",
+            }
+        )
+        separator = "&" if "?" in self.source["url"] else "?"
+        raw = fetch_bytes(
+            self.source["url"] + separator + query,
+            headers={
+                "Accept": "application/json",
+                "Referer": self.source["homepage"],
+            },
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("TCL华星校招接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("req_state") != 9200:
+            raise ValueError("TCL华星校招接口返回失败状态")
+        try:
+            current_page = int(payload["page"])
+            page_count = int(payload["pageCount"])
+            row_count = int(payload["rowCount"])
+            row_size = int(payload["rowSize"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("TCL华星校招接口分页字段异常") from exc
+        items = payload.get("postList")
+        if (
+            current_page != page
+            or page_count < 0
+            or row_count < 0
+            or row_size <= 0
+            or not isinstance(items, list)
+            or len(items) > row_size
+            or any(not isinstance(item, dict) for item in items)
+        ):
+            raise ValueError("TCL华星校招接口分页结构异常")
+        expected_pages = (
+            (row_count + row_size - 1) // row_size if row_count else 0
+        )
+        if page_count != expected_pages:
+            raise ValueError("TCL华星校招接口页数与岗位总数不一致")
+        return {
+            "items": items,
+            "page_count": page_count,
+            "row_count": row_count,
+        }
+
+    def _graduation_years(self, text: str) -> List[int]:
+        graduation_date = datetime.strptime(
+            self.source["graduation_date"], "%Y-%m-%d"
+        ).date()
+        ranges = re.findall(
+            r"(20\d{2})年(\d{1,2})月\s*[-—–至~～]\s*"
+            r"(20\d{2})年(\d{1,2})月",
+            text,
+        )
+        for start_year, start_month, end_year, end_month in ranges:
+            start = datetime(
+                int(start_year), int(start_month), 1
+            ).date()
+            last_day = calendar.monthrange(
+                int(end_year), int(end_month)
+            )[1]
+            end = datetime(
+                int(end_year), int(end_month), last_day
+            ).date()
+            if start <= graduation_date <= end:
+                return [graduation_date.year]
+        if ranges:
+            return []
+        if self._contains(
+            text, self.source.get("target_cycle_keywords", [])
+        ):
+            return [
+                int(year)
+                for year in self.source.get("graduation_years", [])
+            ]
+        return []
+
+    def _detail_url(self, item: Dict[str, Any]) -> str:
+        return self.source["detail_url_template"].format_map(
+            _MissingValueDict(item)
+        )
+
+    def _is_open(self, item: Dict[str, Any]) -> bool:
+        body = fetch_bytes(
+            self._detail_url(item),
+            headers={"Referer": self.source["homepage"]},
+        ).decode("utf-8", errors="replace")
+        if self._contains(
+            body,
+            self.source.get(
+                "closed_markers",
+                ["该职位招聘已经关闭", "该职位已关闭", "职位已下线"],
+            ),
+        ):
+            return False
+        if (
+            str(item["postName"]) not in body
+            or self.source["required_company_name"] not in body
+        ):
+            raise ValueError("TCL华星岗位详情页缺少目标岗位标识")
+        return True
+
+    def collect(self) -> List[JobPosting]:
+        self._validate_portal()
+        max_pages = max(1, int(self.source.get("max_pages", 20)))
+        expected_company_id = str(self.source["company_part"])
+        expected_company = self.source["required_company_name"]
+        recruit_type = str(self.source.get("recruit_type", 1))
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = self.source.get("min_published_at", "")[:10]
+        reference_date = datetime.strptime(
+            self.source.get(
+                "reference_date", datetime.now().date().isoformat()
+            ),
+            "%Y-%m-%d",
+        ).date()
+
+        jobs = []
+        seen_ids = set()
+        expected_total = None
+        page_count = None
+        for page in range(1, max_pages + 1):
+            result = self._page(page)
+            if expected_total is None:
+                expected_total = result["row_count"]
+                page_count = result["page_count"]
+                if page_count > max_pages:
+                    raise ValueError("TCL华星校招接口分页超过配置上限")
+            elif (
+                result["row_count"] != expected_total
+                or result["page_count"] != page_count
+            ):
+                raise ValueError("TCL华星校招接口分页总数发生变化")
+
+            for item in result["items"]:
+                external_id = str(item.get("postId") or "").strip()
+                title = str(item.get("postName") or "").strip()
+                company_id = str(item.get("orgId") or "").strip()
+                company = str(item.get("orgName") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("TCL华星校招岗位缺少 ID 或标题")
+                if external_id in seen_ids:
+                    raise ValueError("TCL华星校招接口返回了重复岗位 ID")
+                seen_ids.add(external_id)
+                if (
+                    company_id != expected_company_id
+                    or company != expected_company
+                    or str(item.get("deptOrgName") or "").strip()
+                    != expected_company
+                    or str(item.get("recruitType") or "").strip()
+                    != recruit_type
+                ):
+                    raise ValueError("TCL华星校招接口混入非目标事业部岗位")
+
+                work_type = str(item.get("workType") or "").strip()
+                if work_type not in self.source.get(
+                    "work_types", ["全职"]
+                ):
+                    continue
+                location = str(item.get("workPlace") or "").strip()
+                duties = _html_fragment_text(item.get("workContent", ""))
+                requirements = _html_fragment_text(
+                    item.get("serviceCondition", "")
+                )
+                post_type = str(item.get("postType") or "").strip()
+                searchable = " ".join(
+                    [title, post_type, location, duties, requirements]
+                )
+                if location_keywords and not self._contains(
+                    location, location_keywords
+                ):
+                    continue
+                if include_keywords and not self._contains(
+                    searchable, include_keywords
+                ):
+                    continue
+                if self._contains(searchable, exclude_keywords):
+                    continue
+
+                published_at = self._date(
+                    item.get("publishDate"), "发布日期"
+                )
+                if min_published_at and (
+                    not published_at or published_at < min_published_at
+                ):
+                    continue
+                deadline = self._date(item.get("endDate"), "截止日期")
+                if deadline and not deadline.startswith("3000-"):
+                    deadline_date = datetime.strptime(
+                        deadline, "%Y-%m-%d"
+                    ).date()
+                    if deadline_date < reference_date:
+                        continue
+                graduation_years = self._graduation_years(requirements)
+                if not graduation_years:
+                    continue
+                if not self._is_open(item):
+                    continue
+
+                values = {
+                    "external_id": external_id,
+                    "title": title,
+                    "company": self.source.get("company", company),
+                    "company_type": self.source.get("company_type", "私企"),
+                    "location": location.replace(",", "、"),
+                    "description": "｜".join(
+                        part
+                        for part in [
+                            "岗位类别：{}".format(post_type)
+                            if post_type
+                            else "",
+                            "岗位职责：{}".format(duties) if duties else "",
+                            "任职要求：{}".format(requirements)
+                            if requirements
+                            else "",
+                        ]
+                        if part
+                    ),
+                    "education": self.source.get(
+                        "education", "本科及以上，具体要求以岗位为准"
+                    ),
+                    "graduation_years": graduation_years,
+                    "published_at": published_at,
+                    "deadline": "长期招聘"
+                    if deadline.startswith("3000-")
+                    else deadline,
+                    "url": self._detail_url(item),
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            if page_count == 0 or page >= page_count:
+                break
+        else:
+            raise ValueError("TCL华星校招接口分页超过配置上限")
+
+        if expected_total is None or len(seen_ids) != expected_total:
+            raise ValueError("TCL华星校招接口没有完整返回全部岗位")
+        return jobs
+
+
 class HonorCampusCollector(HotjobCampusCollector):
     """Validate HONOR's official campaign page before reading campus jobs."""
 
@@ -7285,6 +7582,7 @@ COLLECTOR_TYPES = {
     "shenzhen_investment_holdings": ShenzhenInvestmentHoldingsCollector,
     "sf_tech_campus": SfTechCampusCollector,
     "tencent_campus": TencentCampusCollector,
+    "tcl_hotjob_campus": TclHotjobCampusCollector,
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,

@@ -42,6 +42,7 @@ from job_radar.collectors import (
     SfTechCampusCollector,
     SheinCampusCollector,
     ShenzhenInvestmentHoldingsCollector,
+    TclHotjobCampusCollector,
     TencentCampusCollector,
     WebNoticeCollector,
     ZhaopinCampusCompanyCollector,
@@ -3421,6 +3422,135 @@ class CollectorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
             HotjobCampusCollector(self._hotjob_source()).collect()
+
+    @staticmethod
+    def _tcl_source():
+        return {
+            "id": "tcl_csot_campus",
+            "name": "TCL华星校园招聘",
+            "type": "tcl_hotjob_campus",
+            "homepage": "https://tcl.hotjob.cn/wt/TCL/web/index/campus",
+            "url": "https://tcl.hotjob.cn/wt/TCL/web/json/position/list",
+            "company_part": "100801",
+            "required_company_name": "TCL华星",
+            "company": "TCL华星",
+            "company_type": "私企",
+            "location_keywords": ["广州", "上海", "深圳", "北京"],
+            "include_keywords": ["AI", "数据", "软件", "IT", "数字化"],
+            "exclude_keywords": ["实习", "销售", "营销"],
+            "min_published_at": "2026-07-01",
+            "graduation_date": "2026-11-30",
+            "reference_date": "2026-08-06",
+            "work_types": ["全职"],
+            "max_pages": 3,
+            "education": "本科及以上，具体要求以岗位为准",
+            "detail_url_template": (
+                "https://tcl.hotjob.cn/wt/TCL/web/index/"
+                "webPositionN300!getOnePosition?postId={postId}"
+                "&recruitType=1&brandCode=1&columnId=1"
+            ),
+        }
+
+    @staticmethod
+    def _tcl_page(items, row_count=None, page=1, page_count=1):
+        return json.dumps(
+            {
+                "pageCount": page_count,
+                "postList": items,
+                "req_state": 9200,
+                "page": page,
+                "rowCount": len(items) if row_count is None else row_count,
+                "rowSize": 10,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @staticmethod
+    def _tcl_item(post_id="700028", title="华星-IT与数字化类（本硕）"):
+        return {
+            "serviceCondition": (
+                "学历要求：毕业时间为2025年1月-2026年12月的海外留学生。"
+                "专业要求：计算机相关专业。"
+            ),
+            "endDate": "2026-08-07",
+            "workContent": "参与K8s容器云平台建设，使用Python开发自动化工具。",
+            "publishDate": "2026-08-03",
+            "orgId": 100801,
+            "postName": title,
+            "workPlace": "深圳市,广州市",
+            "orgName": "TCL华星",
+            "postType": "信息技术类",
+            "recruitType": 1,
+            "deptOrgName": "TCL华星",
+            "postId": post_id,
+            "workType": "全职",
+        }
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tcl_hotjob_maps_open_eligible_target_job(self, fetch):
+        item = self._tcl_item()
+        sales = self._tcl_item("700027", "华星-销售及销售支持类")
+        sales["postType"] = "市场营销类"
+        fetch.side_effect = [
+            "TCL 校园招聘 data-value=\"100801\" TCL华星".encode(),
+            self._tcl_page([item, sales]),
+            "TCL招聘 TCL华星 华星-IT与数字化类（本硕）".encode(),
+        ]
+
+        jobs = TclHotjobCampusCollector(self._tcl_source()).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "700028")
+        self.assertEqual(jobs[0].company, "TCL华星")
+        self.assertEqual(jobs[0].location, "深圳市、广州市")
+        self.assertEqual(jobs[0].graduation_years, [2026])
+        self.assertEqual(jobs[0].published_at, "2026-08-03")
+        self.assertEqual(jobs[0].deadline, "2026-08-07")
+        self.assertIn("K8s", jobs[0].description)
+        self.assertIn("postId=700028", jobs[0].url)
+        self.assertIn("comPart=100801", fetch.call_args_list[1].args[0])
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tcl_hotjob_skips_closed_target_job(self, fetch):
+        item = self._tcl_item()
+        fetch.side_effect = [
+            "TCL 校园招聘 100801 TCL华星".encode(),
+            self._tcl_page([item]),
+            "该职位招聘已经关闭，请关注其他职位，谢谢!".encode(),
+        ]
+
+        self.assertEqual(
+            TclHotjobCampusCollector(self._tcl_source()).collect(), []
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tcl_hotjob_skips_job_outside_graduation_window(self, fetch):
+        item = self._tcl_item()
+        item["serviceCondition"] = (
+            "毕业时间为2027年1月-2027年12月的海外留学生。"
+        )
+        fetch.side_effect = [
+            "TCL 校园招聘 100801 TCL华星".encode(),
+            self._tcl_page([item]),
+        ]
+
+        self.assertEqual(
+            TclHotjobCampusCollector(self._tcl_source()).collect(), []
+        )
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_tcl_hotjob_rejects_wrong_business_unit(self, fetch):
+        item = self._tcl_item()
+        item["orgId"] = 100802
+        item["orgName"] = "TCL实业"
+        fetch.side_effect = [
+            "TCL 校园招聘 100801 TCL华星".encode(),
+            self._tcl_page([item]),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "非目标事业部"):
+            TclHotjobCampusCollector(self._tcl_source()).collect()
 
     @staticmethod
     def _honor_source():
