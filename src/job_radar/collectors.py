@@ -871,7 +871,11 @@ class IguopinCompanyCollector(Collector):
         title = str(data.get("title", "") or "")
         if not title:
             raise ValueError("国聘专页配置缺少招聘标题")
-        return self._contains(title, target_keywords)
+        campaign_text = "{} {}".format(
+            title,
+            str(data.get("content", "") or ""),
+        )
+        return self._contains(campaign_text, target_keywords)
 
     def _fetch_page(self, page: int) -> Dict[str, Any]:
         request_json = {
@@ -5479,6 +5483,285 @@ class SfTechCampusCollector(Collector):
         return jobs
 
 
+class CeairCampusCollector(Collector):
+    """Collect target-cycle jobs from China Eastern's public campus API."""
+
+    @staticmethod
+    def _contains(text: Any, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text or "").lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def _asp_date(value: Any) -> str:
+        match = re.fullmatch(r"/Date\((\d+)\)/", str(value or ""))
+        if not match:
+            return ""
+        return datetime.fromtimestamp(
+            int(match.group(1)) / 1000,
+            timezone(timedelta(hours=8)),
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def collect(self) -> List[JobPosting]:
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    method="POST",
+                    form_body={
+                        "pageIndex": 1,
+                        "pageSize": int(self.source.get("page_size", 100)),
+                        "positionName": "",
+                        "workCity": "",
+                        "cateId": "",
+                        "deptId": "",
+                        "banKuaiId": self.source.get("category_id", "4000"),
+                    },
+                    headers={"Referer": self.source["homepage"]},
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("东航校园岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("data"), list
+        ):
+            raise ValueError("东航校园岗位接口缺少 data 数组")
+        try:
+            total = int(payload["total"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("东航校园岗位接口缺少有效总数") from exc
+        items = payload["data"]
+        if total != len(items):
+            raise ValueError("东航校园岗位接口没有完整返回岗位")
+
+        target_keywords = self.source.get("target_keywords", [])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        jobs = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("东航校园岗位元素结构异常")
+            external_id = str(item.get("zp_ActiveInfoID") or "").strip()
+            title = str(item.get("Active_Name") or "").strip()
+            if not external_id or not title:
+                raise ValueError("东航校园岗位缺少稳定 ID 或岗位名称")
+            if str(item.get("News_CategoryId", "")) != str(
+                self.source.get("category_id", "4000")
+            ):
+                raise ValueError("东航校园岗位接口返回了非目标栏目岗位")
+            searchable = " ".join(
+                str(item.get(field) or "")
+                for field in (
+                    "Active_Name",
+                    "News_Title",
+                    "PC_Name",
+                    "PD_Name",
+                    "Active_Remark",
+                    "Active_Notice",
+                )
+            )
+            if target_keywords and not self._contains(
+                searchable, target_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            location = str(item.get("Active_WorkAddress") or "待核对")
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
+                continue
+            description = "｜".join(
+                dict.fromkeys(
+                    part
+                    for part in (
+                        str(item.get("PC_Name") or "").strip(),
+                        str(item.get("PD_Name") or "").strip(),
+                        str(item.get("News_Title") or "").strip(),
+                    )
+                    if part and part != title
+                )
+            )
+            values = {
+                "external_id": external_id,
+                "title": title,
+                "company": self.source.get("company", "中国东方航空"),
+                "company_type": self.source.get("company_type", "央企"),
+                "location": location,
+                "description": description,
+                "education": self.source.get("education", "以岗位为准"),
+                "graduation_years": self.source.get(
+                    "graduation_years", [2027]
+                ),
+                "published_at": self._asp_date(
+                    item.get("Active_CreateDate")
+                    or item.get("News_CreateDate")
+                ),
+                "deadline": self._asp_date(item.get("Active_EndTime")),
+                "url": self.source.get(
+                    "detail_url", self.source["homepage"]
+                ),
+                "source_name": self.source["name"],
+            }
+            jobs.append(JobPosting.from_mapping(values))
+        return jobs
+
+
+class XiaohongshuCampusCollector(Collector):
+    """Collect formal target-cycle jobs from Xiaohongshu's public API."""
+
+    @staticmethod
+    def _contains(text: Any, keywords: Iterable[str]) -> bool:
+        compacted = "".join(str(text or "").lower().split())
+        return any(
+            "".join(str(keyword).lower().split()) in compacted
+            for keyword in keywords
+        )
+
+    def _fetch_page(self, page: int) -> Dict[str, Any]:
+        try:
+            payload = json.loads(
+                fetch_bytes(
+                    self.source["url"],
+                    method="POST",
+                    json_body={
+                        "pageNum": page,
+                        "pageSize": int(self.source.get("page_size", 100)),
+                        "recruitType": "campus",
+                    },
+                    headers={
+                        "Origin": "https://job.xiaohongshu.com",
+                        "Referer": self.source["homepage"],
+                    },
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("小红书校园岗位接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or payload.get("statusCode") != 200:
+            raise ValueError("小红书校园岗位接口返回失败状态")
+        data = payload.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("list"), list):
+            raise ValueError("小红书校园岗位接口缺少岗位数组")
+        if any(
+            field not in data
+            for field in ("pageNum", "pageSize", "total", "totalPage")
+        ):
+            raise ValueError("小红书校园岗位接口缺少分页字段")
+        return data
+
+    def collect(self) -> List[JobPosting]:
+        max_pages = max(1, int(self.source.get("max_pages", 10)))
+        items = []
+        total = 0
+        for page in range(1, max_pages + 1):
+            data = self._fetch_page(page)
+            try:
+                current_page = int(data["pageNum"])
+                total_pages = int(data["totalPage"])
+                total = int(data["total"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("小红书校园岗位分页字段异常") from exc
+            if current_page != page or total_pages > max_pages:
+                raise ValueError("小红书校园岗位分页响应超出配置")
+            page_items = data["list"]
+            if any(not isinstance(item, dict) for item in page_items):
+                raise ValueError("小红书校园岗位元素结构异常")
+            items.extend(page_items)
+            if page >= total_pages:
+                break
+        if len(items) != total:
+            raise ValueError("小红书校园岗位接口没有完整返回岗位")
+
+        target_keywords = self.source.get("target_keywords", [])
+        include_keywords = self.source.get("include_keywords", [])
+        exclude_keywords = self.source.get("exclude_keywords", [])
+        location_keywords = self.source.get("location_keywords", [])
+        min_published_at = str(
+            self.source.get("min_published_at", "") or ""
+        )
+        active_status = self.source.get("active_status", "in_recruitment")
+        jobs = []
+        seen_ids = set()
+        for item in items:
+            external_id = str(item.get("positionId") or "").strip()
+            title = str(item.get("positionName") or "").strip()
+            if not external_id or not title:
+                raise ValueError("小红书校园岗位缺少稳定 ID 或岗位名称")
+            if external_id in seen_ids:
+                continue
+            seen_ids.add(external_id)
+            if active_status and item.get("recruitStatus") != active_status:
+                continue
+            searchable = " ".join(
+                str(item.get(field) or "")
+                for field in (
+                    "positionName",
+                    "jobProjectName",
+                    "jobType",
+                    "duty",
+                    "qualification",
+                )
+            )
+            if target_keywords and not self._contains(
+                searchable, target_keywords
+            ):
+                continue
+            if include_keywords and not self._contains(
+                searchable, include_keywords
+            ):
+                continue
+            if self._contains(searchable, exclude_keywords):
+                continue
+            location = str(item.get("workplace") or "待核对")
+            if location_keywords and not self._contains(
+                location, location_keywords
+            ):
+                continue
+            published_at = str(item.get("publishTime") or "")
+            if min_published_at and (
+                not published_at
+                or published_at[:10] < min_published_at[:10]
+            ):
+                continue
+            description = "；".join(
+                part
+                for part in (
+                    str(item.get("jobProjectName") or "").strip(),
+                    _html_fragment_text(item.get("duty", "")),
+                    _html_fragment_text(item.get("qualification", "")),
+                )
+                if part
+            )
+            values = {
+                "external_id": external_id,
+                "title": title,
+                "company": self.source.get("company", "小红书"),
+                "company_type": self.source.get("company_type", "私企"),
+                "location": location,
+                "description": description,
+                "education": self.source.get("education", "以岗位为准"),
+                "graduation_years": self.source.get(
+                    "graduation_years", [2027]
+                ),
+                "published_at": published_at,
+                "deadline": str(item.get("offlineTime") or ""),
+                "url": self.source.get(
+                    "detail_url_template",
+                    "https://job.xiaohongshu.com/campus/position/{positionId}",
+                ).format_map(_MissingValueDict(item)),
+                "source_name": self.source["name"],
+            }
+            jobs.append(JobPosting.from_mapping(values))
+        return jobs
+
+
 class CampaignWatchCollector(Collector):
     """Emit one notice when an official page announces a target campaign."""
 
@@ -5488,13 +5771,16 @@ class CampaignWatchCollector(Collector):
         parser = _LinkParser()
         parser.feed(body)
         visible_text = " ".join(" ".join(parser.text_parts).split())
+        searchable_text = (
+            body if self.source.get("search_raw_html") else visible_text
+        )
 
         required_text = self.source.get("required_text", "")
-        if required_text and required_text not in visible_text:
+        if required_text and required_text not in searchable_text:
             raise ValueError("活动监控页未出现预期标识，可能已经改版")
 
         target_keywords = self.source.get("target_keywords", [])
-        compacted_text = "".join(visible_text.lower().split())
+        compacted_text = "".join(searchable_text.lower().split())
         matched_keyword = next(
             (
                 keyword
@@ -7556,6 +7842,7 @@ COLLECTOR_TYPES = {
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "byd_campus": BydCampusCollector,
     "campaign_watch": CampaignWatchCollector,
+    "ceair_campus": CeairCampusCollector,
     "cmb_campus": CmbCampusCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
     "china_electronics_campus": ChinaElectronicsCampusCollector,
@@ -7586,6 +7873,7 @@ COLLECTOR_TYPES = {
     "html_links": HtmlLinksCollector,
     "notice_json": NoticeJsonCollector,
     "web_notice": WebNoticeCollector,
+    "xiaohongshu_campus": XiaohongshuCampusCollector,
     "zhaopin_campus_company": ZhaopinCampusCompanyCollector,
 }
 

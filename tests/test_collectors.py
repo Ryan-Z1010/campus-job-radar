@@ -17,6 +17,7 @@ from job_radar.collectors import (
     BeisenPortalCampaignCollector,
     BydCampusCollector,
     CampaignWatchCollector,
+    CeairCampusCollector,
     ChinaElectronicsCampusCollector,
     ChinaResourcesCampusCollector,
     ChinaSouthernPowerGridCollector,
@@ -45,6 +46,7 @@ from job_radar.collectors import (
     TclHotjobCampusCollector,
     TencentCampusCollector,
     WebNoticeCollector,
+    XiaohongshuCampusCollector,
     ZhaopinCampusCompanyCollector,
 )
 
@@ -4016,6 +4018,22 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_iguopin_company_can_match_campaign_content(self, fetch):
+        campaign = json.loads(self._iguopin_campaign("集团人才招聘平台"))
+        campaign["data"]["content"] = (
+            '{"nav":[{"title":"2027届校园招聘"}]}'
+        )
+        fetch.side_effect = [
+            json.dumps(campaign, ensure_ascii=False).encode("utf-8"),
+            self._iguopin_page([]),
+        ]
+
+        jobs = IguopinCompanyCollector(self._iguopin_source()).collect()
+
+        self.assertEqual(jobs, [])
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_iguopin_company_rejects_changed_schema(self, fetch):
         fetch.side_effect = [
             self._iguopin_campaign(),
@@ -5396,6 +5414,185 @@ class CollectorTests(unittest.TestCase):
             ValueError, "公告 JSON 来源的 list_path 不存在"
         ):
             NoticeJsonCollector(source).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ceair_campus_filters_cycle_direction_and_location(self, fetch):
+        source = {
+            "id": "china_eastern_airlines",
+            "name": "中国东方航空校园招聘",
+            "type": "ceair_campus",
+            "homepage": "https://job.ceair.com/campus/campusJobList.html",
+            "url": "https://job.ceair.com/Ashx/Campus.ashx?active=list",
+            "category_id": "4000",
+            "company": "中国东方航空集团有限公司",
+            "company_type": "央企",
+            "target_keywords": ["27年度", "2027届"],
+            "include_keywords": ["数据", "AI", "软件"],
+            "exclude_keywords": ["实习"],
+            "location_keywords": ["上海", "广州"],
+            "graduation_years": [2027],
+        }
+        target = {
+            "zp_ActiveInfoID": 7001,
+            "News_CategoryId": 4000,
+            "News_Title": "2027年度东方航空信息部招聘启事",
+            "Active_Name": "【27年度秋招】数据研发工程师",
+            "PC_Name": "信息技术类",
+            "PD_Name": "信息部",
+            "Active_WorkAddress": "上海,广州",
+            "Active_CreateDate": "/Date(1786035600000)/",
+            "Active_EndTime": "/Date(1790783999000)/",
+        }
+        old = dict(
+            target,
+            zp_ActiveInfoID=6001,
+            News_Title="2026年度东方航空信息部招聘启事",
+            Active_Name="【26年度夏招】数据研发工程师",
+        )
+        fetch.return_value = json.dumps(
+            {"total": 2, "data": [target, old]}, ensure_ascii=False
+        ).encode("utf-8")
+
+        jobs = CeairCampusCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "7001")
+        self.assertEqual(jobs[0].title, "【27年度秋招】数据研发工程师")
+        self.assertEqual(jobs[0].company_type, "央企")
+        self.assertEqual(jobs[0].location, "上海,广州")
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertTrue(jobs[0].published_at.startswith("2026-08-"))
+        self.assertEqual(fetch.call_args.kwargs["form_body"]["banKuaiId"], "4000")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_ceair_campus_rejects_incomplete_payload(self, fetch):
+        fetch.return_value = json.dumps(
+            {"total": 2, "data": []}
+        ).encode("utf-8")
+        source = {
+            "id": "china_eastern_airlines",
+            "name": "中国东方航空校园招聘",
+            "type": "ceair_campus",
+            "homepage": "https://job.ceair.com/campus/campusJobList.html",
+            "url": "https://job.ceair.com/api",
+        }
+
+        with self.assertRaisesRegex(ValueError, "没有完整返回岗位"):
+            CeairCampusCollector(source).collect()
+
+    @staticmethod
+    def _xiaohongshu_source():
+        return {
+            "id": "xiaohongshu",
+            "name": "小红书校园招聘",
+            "type": "xiaohongshu_campus",
+            "homepage": "https://job.xiaohongshu.com/campus/position",
+            "url": "https://job.xiaohongshu.com/api/position",
+            "company": "小红书",
+            "company_type": "私企",
+            "page_size": 2,
+            "max_pages": 3,
+            "target_keywords": ["【2027届】", "2027届校园招聘"],
+            "include_keywords": ["AI", "数据", "算法"],
+            "exclude_keywords": ["实习", "练习生"],
+            "location_keywords": ["上海", "北京"],
+            "min_published_at": "2026-07-01",
+            "graduation_years": [2027],
+        }
+
+    @staticmethod
+    def _xiaohongshu_page(items, page, total, total_pages):
+        return json.dumps(
+            {
+                "statusCode": 200,
+                "data": {
+                    "pageNum": page,
+                    "pageSize": 2,
+                    "total": total,
+                    "totalPage": total_pages,
+                    "list": items,
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_xiaohongshu_campus_paginates_and_excludes_internships(self, fetch):
+        target = {
+            "positionId": 27001,
+            "positionName": "【2027届】大模型数据工程师",
+            "workplace": "上海市，北京市",
+            "publishTime": "2026-08-20",
+            "jobProjectName": "2027届秋季校园招聘",
+            "jobType": "技术",
+            "recruitStatus": "in_recruitment",
+            "duty": "<p>负责 AI 数据平台建设。</p>",
+            "qualification": "硕士优先",
+        }
+        internship = dict(
+            target,
+            positionId=27002,
+            positionName="【2027届】大模型数据工程师实习生",
+        )
+        old = dict(
+            target,
+            positionId=26001,
+            positionName="【2026届】数据工程师",
+            jobProjectName="2026 春季校园招聘",
+        )
+        fetch.side_effect = [
+            self._xiaohongshu_page([target, internship], 1, 3, 2),
+            self._xiaohongshu_page([old], 2, 3, 2),
+        ]
+
+        jobs = XiaohongshuCampusCollector(
+            self._xiaohongshu_source()
+        ).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].external_id, "27001")
+        self.assertEqual(jobs[0].company, "小红书")
+        self.assertIn("AI 数据平台建设", jobs[0].description)
+        self.assertEqual(
+            jobs[0].url,
+            "https://job.xiaohongshu.com/campus/position/27001",
+        )
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_args_list[1].kwargs["json_body"]["pageNum"], 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_xiaohongshu_campus_rejects_changed_schema(self, fetch):
+        fetch.return_value = json.dumps(
+            {"statusCode": 200, "data": {"list": {}}}
+        ).encode("utf-8")
+
+        with self.assertRaisesRegex(ValueError, "缺少岗位数组"):
+            XiaohongshuCampusCollector(
+                self._xiaohongshu_source()
+            ).collect()
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_campaign_watch_can_search_raw_script_data(self, fetch):
+        fetch.return_value = (
+            '<main id="app">You need JavaScript</main>'
+            '<script>const campaign="2027届秋季校园招聘";</script>'
+        ).encode("utf-8")
+        source = {
+            "id": "ctrip",
+            "name": "携程集团",
+            "type": "campaign_watch",
+            "homepage": "https://job.ctrip.com/",
+            "search_raw_html": True,
+            "required_text": "You need JavaScript",
+            "target_keywords": ["2027届秋季校园招聘"],
+            "title": "携程集团2027届校园招聘已启动",
+            "company": "携程集团",
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].company, "携程集团")
 
     @patch("job_radar.collectors.fetch_bytes")
     def test_campaign_watch_returns_empty_before_launch(self, fetch):
