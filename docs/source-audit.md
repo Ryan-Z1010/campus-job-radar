@@ -1523,3 +1523,27 @@ TCL 官方校园招聘页仍使用旧版 Hotjob 公共接口。页面企业筛�
 本批次不绕过登录、验证码、个人 Cookie、访问控制或招聘平台签名。中国邮政当前页面
 仍为上一年度联招门户，国家电投当前返回503，均已在配置备注与运行报告中明确记录；后续
 每次工作流运行继续重试，页面恢复或切换到2027入口后再生成提醒。
+
+## 已启用：再新增十家央企公开校招入口
+
+2026-08-07 又扩充目标公司池中尚未接入的10家央企。全部采用企业官网、企业官方招聘系统
+或官网公开招聘公告页，统一使用 `campaign_watch` 监控正式2027届校招标识；当页面出现
+2027届启动公告后，邮件会提示进入官方页面逐岗核对，避免把往届公告、实习或社会招聘误报
+为秋招岗位。
+
+| 来源 | 官方入口 | 监控方式 | 当日核验 |
+|---|---|---|---|
+| 中国兵器工业集团有限公司 | `http://www.norincogroup.com.cn/` | `campaign_watch` | 200；官网公开页含集团名称 |
+| 中国航空工业集团有限公司 | `https://www.avic.com/` | `campaign_watch` | 200；官网公开页含“航空工业” |
+| 中国航天科技集团有限公司 | `https://m.spacechina.com/` | `campaign_watch` | 200；官网公开页含“人才招聘”入口 |
+| 中国航天科工集团有限公司 | `http://www.casic.com.cn/` | `campaign_watch` | 200；官网 HTTP 入口可读取集团名称 |
+| 中国电子科技集团有限公司 | `https://www.cetc.com.cn/zgdk/1593022/1592495/index.html` | `campaign_watch` | 200；“招聘及公告”页可读取 |
+| 中国铁路通信信号集团有限公司 | `https://www.crsc.cn/news/tsi_1078_14155_94223.html` | `campaign_watch` | 200；官网招聘公告可读取“中国通号” |
+| 中国航空集团有限公司（国航） | `https://et.airchina.com.cn/cn/about_us/recruitment/ground_crew_info/184923.shtml` | `campaign_watch` | 200；官方招聘公告含“校园招聘” |
+| 中国中化控股有限责任公司 | `https://www.sinochem.com/` | `campaign_watch` | 200；集团官网可读取“中国中化” |
+| 中国冶金科工集团有限公司 | `https://www.mcc.com.cn/` | `campaign_watch` | 200；集团官网可读取“中国中冶” |
+| 中国大唐集团有限公司 | `https://zhaopin.china-cdt.com/help?sid=3` | `campaign_watch` | 200；官方人才招聘系统说明承载校园招聘 |
+
+中国兵器工业集团和中国航天科工集团的官方页面当前以 HTTP 入口稳定公开，配置按官方
+入口保留并在备注中标注；不因强制 HTTPS 或跳转问题臆造岗位。以上来源只读取公开 HTML，
+不绕过登录、验证码、个人 Cookie、访问控制、招聘平台签名或涉密信息限制。

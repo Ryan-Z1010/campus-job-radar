@@ -16,8 +16,6 @@ on:
         required: true
         default: false
         type: boolean
-  schedule:
-    - cron: "17 1 * * *"
 
 permissions:
   contents: read
@@ -45,7 +43,7 @@ jobs:
             job-radar-db-
 
       - name: Run multi-agent monitor
-        if: github.event_name == 'schedule' || inputs.engine == 'agent'
+        if: github.event_name == 'workflow_dispatch' && inputs.engine == 'agent'
         env:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}

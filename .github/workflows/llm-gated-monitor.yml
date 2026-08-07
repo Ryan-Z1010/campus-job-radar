@@ -1,0 +1,99 @@
+name: LLM gated job monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_email:
+        description: "手动运行时是否允许发送通过 LLM 门槛的提醒"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "47 1 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-gated-job-monitor
+  cancel-in-progress: false
+
+jobs:
+  llm-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install -e .
+
+      - name: Restore LLM analysis cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/llm_analysis.sqlite3
+            data/llm_notification.sqlite3
+          key: llm-analysis-db-${{ github.run_id }}
+          restore-keys: |
+            llm-analysis-db-
+
+      - name: Run LLM-gated monitor
+        env:
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          ARK_BASE_URL: ${{ secrets.ARK_BASE_URL }}
+          ARK_MODEL: ${{ secrets.ARK_MODEL }}
+          LLM_PROFILE_JSON: ${{ secrets.LLM_PROFILE_JSON }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
+          ALLOW_EMAIL: ${{ github.event_name == 'schedule' || inputs.send_email }}
+        run: |
+          set -euo pipefail
+          profile_path="configs/profile.example.json"
+          if [ -n "${LLM_PROFILE_JSON:-}" ]; then
+            profile_path="${RUNNER_TEMP}/profile.ci.json"
+            printf '%s' "$LLM_PROFILE_JSON" > "$profile_path"
+          fi
+
+          args=(
+            llm-analyze
+            --profile "$profile_path"
+            --max-jobs 3
+            --notify-min-score 70
+            --output reports/llm/latest.json
+            --cache-database data/llm_analysis.sqlite3
+            --notification-database data/llm_notification.sqlite3
+            --notification-preview-dir reports/llm/notification-preview
+          )
+          if [ "${ALLOW_EMAIL:-false}" = "true" ] \
+            && [ -n "${ALERT_EMAIL:-}" ] \
+            && [ -n "${SMTP_HOST:-}" ] \
+            && [ -n "${SMTP_USERNAME:-}" ] \
+            && [ -n "${SMTP_PASSWORD:-}" ]; then
+            args+=(--send-email)
+          fi
+          python -m job_radar "${args[@]}"
+
+      - name: Save LLM analysis cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/llm_analysis.sqlite3
+            data/llm_notification.sqlite3
+          key: llm-analysis-db-${{ github.run_id }}
+
+      - name: Upload LLM reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-job-radar-report-${{ github.run_id }}
+          path: reports/llm/
+          if-no-files-found: warn
+          retention-days: 14

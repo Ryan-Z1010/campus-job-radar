@@ -16,7 +16,7 @@ class ScoringTests(unittest.TestCase):
             (ROOT / "configs/profile.example.json").read_text(encoding="utf-8")
         )
 
-    def test_guangzhou_ai_state_owned_job_scores_high(self):
+    def test_city_does_not_add_score_to_state_owned_job(self):
         job = JobPosting(
             title="AI智能体开发工程师（2026届）",
             company="测试国企",
@@ -28,9 +28,9 @@ class ScoringTests(unittest.TestCase):
             graduation_years=[2026],
         )
         score, reasons = score_job(job, self.profile)
-        self.assertGreaterEqual(score, 80)
+        self.assertEqual(score, 84)
         self.assertEqual(job.eligibility, "符合")
-        self.assertTrue(any("广州" in reason for reason in reasons))
+        self.assertFalse(any("城市" in reason for reason in reasons))
 
     def test_sales_role_is_penalized(self):
         job = JobPosting(

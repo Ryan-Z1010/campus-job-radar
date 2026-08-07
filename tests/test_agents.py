@@ -206,6 +206,7 @@ class AgentTests(unittest.TestCase):
             "上海",
             "https://example.com/jobs/email",
             "测试来源",
+            description="负责数据开发和Python应用",
             score=70,
             eligibility="符合",
         )
@@ -216,6 +217,49 @@ class AgentTests(unittest.TestCase):
                 )
         self.assertTrue(result.metadata["email_sent"])
         mocked_email.assert_called_once()
+
+    def test_notification_agent_directly_alerts_fitting_state_owned_job(self):
+        job = JobPosting(
+            "AI智能体工程师",
+            "测试央企",
+            "北京",
+            "https://example.com/jobs/state-owned",
+            "测试来源",
+            company_type="央企",
+            description="负责AI智能体和Python开发",
+            score=0,
+            eligibility="符合",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("job_radar.agents.notification.send_email") as mocked_email:
+                result = NotificationAgent().run(
+                    [job], self.profile, directory, dry_run=False
+                )
+        self.assertEqual(result.metadata["direct_count"], 1)
+        self.assertEqual(result.metadata["scored_count"], 0)
+        mocked_email.assert_called_once()
+
+    def test_notification_agent_does_not_directly_alert_unrelated_state_owned_job(
+        self,
+    ):
+        job = JobPosting(
+            "行政管理岗",
+            "测试央企",
+            "北京",
+            "https://example.com/jobs/state-owned-admin",
+            "测试来源",
+            company_type="央企",
+            description="负责行政事务",
+            score=100,
+            eligibility="符合",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("job_radar.agents.notification.send_email") as mocked_email:
+                result = NotificationAgent().run(
+                    [job], self.profile, directory, dry_run=False
+                )
+        self.assertEqual(result.metadata["alerted_count"], 0)
+        mocked_email.assert_not_called()
 
     def test_notification_failure_is_visible_to_orchestrator(self):
         with tempfile.TemporaryDirectory() as directory:

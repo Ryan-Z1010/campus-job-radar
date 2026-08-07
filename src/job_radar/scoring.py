@@ -28,14 +28,6 @@ def score_job(job: JobPosting, profile: Dict[str, Any]) -> Tuple[int, list]:
     reasons = []
     searchable = "{} {}".format(job.title, job.description).lower()
 
-    cities = profile.get("preferred_cities", [])
-    for index, city in enumerate(cities):
-        if city.lower() in job.location.lower():
-            points = max(8, 30 - index * 6)
-            score += points
-            reasons.append("城市 {} +{}".format(city, points))
-            break
-
     types = profile.get("company_type_priority", [])
     if job.company_type in types:
         points = max(4, 20 - types.index(job.company_type) * 5)
