@@ -8,6 +8,21 @@ on:
         required: true
         default: false
         type: boolean
+      source_id:
+        description: "可选：手动调试时只运行一个来源 ID；留空表示全量来源"
+        required: false
+        default: ""
+        type: string
+      include_demo:
+        description: "手动调试时是否允许演示来源"
+        required: true
+        default: false
+        type: boolean
+      max_jobs:
+        description: "本次最多交给 LLM 分析的岗位数"
+        required: true
+        default: 3
+        type: number
   schedule:
     - cron: "47 1 * * *"
 
@@ -53,6 +68,9 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
           ALLOW_EMAIL: ${{ github.event_name == 'schedule' || inputs.send_email }}
+          SOURCE_ID: ${{ inputs.source_id }}
+          INCLUDE_DEMO: ${{ inputs.include_demo || false }}
+          MAX_JOBS: ${{ inputs.max_jobs || 3 }}
         run: |
           set -euo pipefail
           profile_path="configs/profile.example.json"
@@ -64,13 +82,19 @@ jobs:
           args=(
             llm-analyze
             --profile "$profile_path"
-            --max-jobs 3
+            --max-jobs "${MAX_JOBS:-3}"
             --notify-min-score 70
             --output reports/llm/latest.json
             --cache-database data/llm_analysis.sqlite3
             --notification-database data/llm_notification.sqlite3
             --notification-preview-dir reports/llm/notification-preview
           )
+          if [ "${INCLUDE_DEMO:-false}" = "true" ]; then
+            args+=(--include-demo)
+          fi
+          if [ -n "${SOURCE_ID:-}" ]; then
+            args+=(--source "$SOURCE_ID")
+          fi
           if [ "${ALLOW_EMAIL:-false}" = "true" ] \
             && [ -n "${ALERT_EMAIL:-}" ] \
             && [ -n "${SMTP_HOST:-}" ] \
