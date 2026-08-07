@@ -2,13 +2,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from job_radar.agents import (
     AgentStatus,
     CollectionAgent,
     EligibilityAgent,
+    NotificationAgent,
     OrchestratorAgent,
     ReviewAgent,
+    StorageAgent,
     write_agent_trace,
 )
 from job_radar.cli import main
@@ -152,6 +155,171 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertTrue(trace.exists())
             self.assertFalse((Path(directory) / "job_radar.db").exists())
+
+    def test_storage_agent_returns_only_new_jobs_and_is_idempotent(self):
+        job = JobPosting(
+            "AI工程师",
+            "测试公司",
+            "广州",
+            "https://example.com/jobs/storage",
+            "测试来源",
+            external_id="storage-1",
+            score=80,
+            eligibility="符合",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "jobs.db")
+            first = StorageAgent().run([job], database)
+            second = StorageAgent().run([job], database)
+        self.assertEqual(first.status, AgentStatus.SUCCESS)
+        self.assertEqual(len(first.jobs), 1)
+        self.assertEqual(first.metadata["inserted_count"], 1)
+        self.assertEqual(second.metadata["inserted_count"], 0)
+        self.assertEqual(second.metadata["updated_count"], 1)
+
+    def test_notification_agent_generates_reports_without_email_in_dry_run(self):
+        job = JobPosting(
+            "AI工程师",
+            "测试公司",
+            "广州",
+            "https://example.com/jobs/notify",
+            "测试来源",
+            score=80,
+            eligibility="符合",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("job_radar.agents.notification.send_email") as mocked_email:
+                result = NotificationAgent().run(
+                    [job], self.profile, directory, dry_run=True
+                )
+            self.assertTrue((Path(directory) / "digest.html").exists())
+            self.assertTrue((Path(directory) / "jobs.json").exists())
+        self.assertEqual(result.status, AgentStatus.SUCCESS)
+        self.assertEqual(result.metadata["alerted_count"], 1)
+        self.assertFalse(result.metadata["email_sent"])
+        mocked_email.assert_not_called()
+
+    def test_notification_agent_sends_email_when_enabled(self):
+        job = JobPosting(
+            "数据工程师",
+            "测试公司",
+            "上海",
+            "https://example.com/jobs/email",
+            "测试来源",
+            score=70,
+            eligibility="符合",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("job_radar.agents.notification.send_email") as mocked_email:
+                result = NotificationAgent().run(
+                    [job], self.profile, directory, dry_run=False
+                )
+        self.assertTrue(result.metadata["email_sent"])
+        mocked_email.assert_called_once()
+
+    def test_notification_failure_is_visible_to_orchestrator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch(
+                "job_radar.agents.notification.send_email",
+                side_effect=RuntimeError("SMTP unavailable"),
+            ):
+                result = OrchestratorAgent().run(
+                    self.profile,
+                    [self.demo_source],
+                    include_demo=True,
+                    source_ids=["demo_official_jobs"],
+                    database=str(root / "jobs.db"),
+                    report_dir=str(root / "report"),
+                    dry_run=False,
+                )
+        self.assertEqual(result.status, AgentStatus.FAILED)
+        self.assertEqual(len(result.pipeline_errors), 1)
+        self.assertIn("SMTP unavailable", result.pipeline_errors[0])
+        self.assertFalse(result.email_sent)
+
+    def test_production_mode_requires_database_and_report_directory(self):
+        with self.assertRaisesRegex(ValueError, "必须同时配置"):
+            OrchestratorAgent().run(
+                self.profile,
+                [self.demo_source],
+                include_demo=True,
+                database="jobs.db",
+            )
+
+    def test_production_orchestrator_collects_once_then_stores_and_notifies(self):
+        class CountingCollectionAgent:
+            def __init__(self):
+                self.calls = 0
+                self.delegate = CollectionAgent()
+
+            def run(self, source):
+                self.calls += 1
+                return self.delegate.run(source)
+
+        collection = CountingCollectionAgent()
+        orchestrator = OrchestratorAgent(collection_agent=collection)
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "jobs.db")
+            report_dir = str(Path(directory) / "report")
+            first = orchestrator.run(
+                self.profile,
+                [self.demo_source],
+                include_demo=True,
+                source_ids=["demo_official_jobs"],
+                database=database,
+                report_dir=report_dir,
+                dry_run=True,
+            )
+            second = orchestrator.run(
+                self.profile,
+                [self.demo_source],
+                include_demo=True,
+                source_ids=["demo_official_jobs"],
+                database=database,
+                report_dir=report_dir,
+                dry_run=True,
+            )
+        self.assertEqual(collection.calls, 2)
+        self.assertEqual(first.mode, "production")
+        self.assertEqual(first.inserted, 3)
+        self.assertEqual(first.alerted, 2)
+        self.assertEqual(
+            [step.agent_name for step in first.final_steps],
+            ["StorageAgent", "NotificationAgent"],
+        )
+        self.assertEqual(second.inserted, 0)
+        self.assertEqual(second.updated, 3)
+        self.assertEqual(second.alerted, 0)
+
+    def test_cli_agent_monitor_runs_end_to_end_without_sending_email(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exit_code = main(
+                [
+                    "agent-monitor",
+                    "--dry-run",
+                    "--include-demo",
+                    "--source",
+                    "demo_official_jobs",
+                    "--database",
+                    str(root / "jobs.db"),
+                    "--report-dir",
+                    str(root / "report"),
+                    "--trace-file",
+                    str(root / "agent-trace.json"),
+                ]
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((root / "jobs.db").exists())
+            self.assertTrue((root / "report" / "digest.html").exists())
+            payload = json.loads(
+                (root / "agent-trace.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(payload["mode"], "production")
+        self.assertEqual(payload["counts"]["inserted"], 3)
+        self.assertEqual(payload["counts"]["alerted"], 2)
+        self.assertEqual(len(payload["final_steps"]), 2)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,20 @@ name: Daily job monitor
 
 on:
   workflow_dispatch:
+    inputs:
+      engine:
+        description: "选择监控引擎（agent 为默认，legacy 用于紧急回退）"
+        required: true
+        default: agent
+        type: choice
+        options:
+          - agent
+          - legacy
+      send_email:
+        description: "手动运行时是否允许发送提醒邮件"
+        required: true
+        default: false
+        type: boolean
   schedule:
     - cron: "17 1 * * *"
 
@@ -30,7 +44,8 @@ jobs:
           restore-keys: |
             job-radar-db-
 
-      - name: Run monitor
+      - name: Run multi-agent monitor
+        if: github.event_name == 'schedule' || inputs.engine == 'agent'
         env:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -38,8 +53,26 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
+          ALLOW_EMAIL: ${{ github.event_name == 'schedule' || inputs.send_email }}
         run: |
-          if [ -n "$ALERT_EMAIL" ] && [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_PASSWORD" ]; then
+          if [ "$ALLOW_EMAIL" = "true" ] && [ -n "$ALERT_EMAIL" ] && [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_PASSWORD" ]; then
+            python -m job_radar agent-monitor
+          else
+            python -m job_radar agent-monitor --dry-run
+          fi
+
+      - name: Run legacy monitor
+        if: github.event_name == 'workflow_dispatch' && inputs.engine == 'legacy'
+        env:
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_USE_SSL: ${{ secrets.SMTP_USE_SSL }}
+          ALLOW_EMAIL: ${{ inputs.send_email }}
+        run: |
+          if [ "$ALLOW_EMAIL" = "true" ] && [ -n "$ALERT_EMAIL" ] && [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_PASSWORD" ]; then
             python -m job_radar run
           else
             python -m job_radar run --dry-run
@@ -57,6 +90,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: job-radar-report-${{ github.run_id }}
-          path: reports/latest/
+          path: |
+            reports/latest/
+            reports/agents/latest.json
           if-no-files-found: warn
           retention-days: 14

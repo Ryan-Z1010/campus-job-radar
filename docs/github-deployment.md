@@ -23,8 +23,10 @@
 
 ## 4. 数据持久化
 
-工作流用 GitHub Actions cache 保存 SQLite 去重库，并上传当次报告 artifact。Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
+工作流用 GitHub Actions cache 保存 SQLite 去重库，并上传当次岗位报告和 `reports/agents/latest.json` 决策轨迹 artifact。Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
 
 ## 5. 调度注意事项
+
+定时任务默认执行 `agent-monitor`，一次完成采集、复核、入库、报告和邮件，不会重复抓取来源。在 Actions 页面手动运行 `Daily job monitor` 时，可以把 `engine` 选择为 `legacy`，临时回退到旧的 `run` 流程。手动运行默认不发邮件，只有显式勾选 `send_email` 且 Secrets 完整时才会发送；定时运行仍会在 Secrets 完整时自动发送。
 
 GitHub 的定时任务使用 UTC，可能在高负载时延迟，且只运行默认分支上的工作流。公开仓库长期无活动时，GitHub 也可能停用 scheduled workflow。重要截止日期仍应回到招聘官网核对。
