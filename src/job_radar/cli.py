@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .agents import OrchestratorAgent, write_agent_trace
@@ -73,6 +74,53 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-demo", action="store_true", help="显式启用演示岗位"
     )
 
+    llm_analyze = subparsers.add_parser(
+        "llm-analyze",
+        help="用可选的大模型智能体分析岗位，不入主库也不发送邮件",
+    )
+    llm_analyze.add_argument("--profile", default="configs/profile.example.json")
+    llm_analyze.add_argument("--sources", default="configs/sources.json")
+    llm_analyze.add_argument("--env-file", default=".env")
+    llm_analyze.add_argument(
+        "--output",
+        default="reports/llm/latest.json",
+        help="保存大模型分析与审校轨迹",
+    )
+    llm_analyze.add_argument(
+        "--cache-database",
+        default="data/llm_analysis.sqlite3",
+        help="按岗位内容、脱敏画像、模型和提示词版本缓存结果",
+    )
+    llm_analyze.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="跳过读取和写入大模型分析缓存",
+    )
+    llm_analyze.add_argument(
+        "--source",
+        action="append",
+        help="只运行指定来源 ID，可重复传入",
+    )
+    llm_analyze.add_argument(
+        "--max-jobs",
+        type=int,
+        default=10,
+        help="本次最多分析的岗位数，默认 10",
+    )
+    llm_analyze.add_argument(
+        "--model",
+        help="OpenAI 模型；默认读取 OPENAI_MODEL，再回退到 gpt-5.6-luna",
+    )
+    llm_analyze.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="单次大模型请求超时秒数",
+    )
+    llm_analyze.add_argument(
+        "--include-demo", action="store_true", help="显式启用演示岗位"
+    )
+
     audit = subparsers.add_parser("audit", help="检查招聘来源是否可访问")
     audit.add_argument("--sources", default="configs/sources.json")
     audit.add_argument("--timeout", type=int, default=15)
@@ -100,6 +148,51 @@ def main(argv=None) -> int:
             )
             print("测试邮件已发送。")
             return 0
+        if args.command == "llm-analyze":
+            from .llm import (
+                LlmAnalysisCache,
+                LlmRecruitmentOrchestrator,
+                OpenAIResponsesClient,
+                write_llm_report,
+            )
+
+            load_dotenv(args.env_file)
+            profile = load_profile(args.profile)
+            deterministic = OrchestratorAgent().run(
+                profile=profile,
+                sources=load_sources(args.sources),
+                include_demo=args.include_demo,
+                source_ids=args.source,
+            )
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                raise ConfigError(
+                    "OPENAI_API_KEY 未配置；llm-analyze 不会使用邮件或 GitHub Secrets"
+                )
+            model = args.model or os.environ.get("OPENAI_MODEL") or "gpt-5.6-luna"
+            cache = (
+                None
+                if args.no_cache
+                else LlmAnalysisCache(args.cache_database)
+            )
+            result = LlmRecruitmentOrchestrator(
+                OpenAIResponsesClient(
+                    api_key=api_key,
+                    model=model,
+                    timeout=args.timeout,
+                ),
+                cache=cache,
+            ).run(deterministic.jobs, profile, max_jobs=args.max_jobs)
+            report_path = write_llm_report(result, args.output)
+            print(
+                "LLM选中 {0.selected} | 完成 {0.analyzed} | "
+                "缓存命中 {0.cache_hits} | 需人工复核 {0.needs_review} | "
+                "失败 {0.failed}".format(result)
+            )
+            print("LLM分析报告: {}".format(report_path))
+            for error in deterministic.source_errors:
+                print("来源错误: {}".format(error), file=sys.stderr)
+            return 2 if result.failed and result.analyzed == 0 else 0
         if args.command == "agent-run":
             result = OrchestratorAgent().run(
                 profile=load_profile(args.profile),

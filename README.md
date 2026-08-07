@@ -71,7 +71,8 @@ CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控�
 - 瞬时网络错误有限重试，不掩盖 403、404 等确定性来源异常；
 - 单元测试和 GitHub Actions；
 - 除部分站点的公开接口加密兼容外，主要使用 Python 标准库；
-- 可审计的多 Agent 链路：编排、采集、资格判断、复核、存储和通知 Agent。
+- 可审计的多 Agent 链路：编排、采集、资格判断、复核、存储和通知 Agent；
+- 可选的大模型多智能体分析：JD 理解、语义匹配、独立审校、一次有界修订与内容缓存。
 
 ## 5 分钟体验
 
@@ -117,6 +118,31 @@ python -m job_radar agent-run \
 ```
 
 详细设计、安全边界和两种运行方式见 [架构说明](docs/architecture.md#多-agent-架构)。
+
+## 大模型多智能体分析（可选）
+
+`llm-analyze` 在确定性采集和硬性资格判断之后，依次运行
+`JDUnderstandingAgent`、`SemanticMatchingAgent` 和 `CriticAgent`。审校不通过时只允许
+修订一次，再不通过就进入人工复核。这个命令目前是安全的分析模式：不写入岗位主库、
+不发送邮件，也没有接入每日 GitHub 定时任务。
+
+先在本地 `.env` 中配置 `OPENAI_API_KEY`，建议在 `profile.local.json` 中补充不含姓名、
+邮箱和电话的 `skills`、`experience_highlights`、`project_highlights` 与
+`language_qualifications` 字符串数组，然后从一个演示来源、小批量岗位开始：
+
+```bash
+python -m job_radar llm-analyze \
+  --profile configs/profile.local.json \
+  --include-demo \
+  --source demo_official_jobs \
+  --max-jobs 3
+```
+
+分析轨迹写入 `reports/llm/latest.json`，缓存写入
+`data/llm_analysis.sqlite3`。缓存键包含岗位内容、脱敏画像、模型和提示词版本；岗位或画像
+发生变化时会自动重新分析。调用 OpenAI API 会产生独立费用，现有邮件 Secrets 不会被复用。
+实现范围、隐私字段和下一阶段验收条件见
+[大模型多智能体说明](docs/llm-multi-agent.md)。
 
 ## 使用自己的偏好
 
@@ -223,6 +249,6 @@ CampusJobRadar 不是投递机器人，不会代替用户登录或提交简历�
 - 增加 RSS/微信公众号“人工转录入口”和变更检测；
 - 生成可部署的静态岗位看板；
 - 增加截止日期提醒和申请状态跟踪；
-- 可选接入大模型，对模糊 JD 做解释性分类，但不让模型替代硬性资格规则。
+- 用人工标注岗位集评估大模型语义匹配准确率，再决定是否接入每日通知主链路。
 
 欢迎阅读 [贡献指南](CONTRIBUTING.md) 后提交新的公开来源适配器。
