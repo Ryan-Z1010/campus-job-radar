@@ -11,9 +11,24 @@ from .types import AgentEvidence, AgentResult, AgentStatus
 
 
 class NotificationAgent:
-    """Generate reports and notify only for new jobs above the score threshold."""
+    """Notify direct-fit state-owned jobs or scored jobs from other companies."""
 
     name = "NotificationAgent"
+    DIRECT_COMPANY_TYPES = frozenset(("央企", "国企"))
+
+    @staticmethod
+    def _matches_target_role(job: JobPosting, profile: Dict[str, Any]) -> bool:
+        searchable = "{} {}".format(job.title, job.description).lower()
+        positive_terms = list(profile.get("positive_keywords", {}))
+        positive_terms.extend(profile.get("target_roles", []))
+        negative_terms = profile.get("negative_keywords", {})
+        has_positive = any(
+            str(term).lower() in searchable for term in positive_terms
+        )
+        has_negative = any(
+            str(term).lower() in searchable for term in negative_terms
+        )
+        return has_positive and not has_negative
 
     def run(
         self,
@@ -26,12 +41,28 @@ class NotificationAgent:
         started_at = utc_now_iso()
         job_list = list(jobs)
         threshold = int(profile.get("minimum_score", 0))
-        alert_jobs = [job for job in job_list if job.score >= threshold]
+        direct_jobs = [
+            job
+            for job in job_list
+            if job.company_type in self.DIRECT_COMPANY_TYPES
+            and job.eligibility == "符合"
+            and self._matches_target_role(job, profile)
+        ]
+        scored_jobs = [
+            job
+            for job in job_list
+            if job.company_type not in self.DIRECT_COMPANY_TYPES
+            and job.eligibility == "符合"
+            and self._matches_target_role(job, profile)
+            and job.score >= threshold
+        ]
+        alert_jobs = direct_jobs + scored_jobs
         email_sent = False
         evidence = [
             AgentEvidence("首次出现岗位", "{} 个".format(len(job_list))),
             AgentEvidence("提醒阈值", str(threshold)),
-            AgentEvidence("达到阈值", "{} 个".format(len(alert_jobs))),
+            AgentEvidence("央国企直接提醒", "{} 个".format(len(direct_jobs))),
+            AgentEvidence("其他企业适配度提醒", "{} 个".format(len(scored_jobs))),
             AgentEvidence("报告目录", Path(report_dir).name),
         ]
 
@@ -58,6 +89,8 @@ class NotificationAgent:
                 metadata={
                     "input_count": len(job_list),
                     "alerted_count": len(alert_jobs),
+                    "direct_count": len(direct_jobs),
+                    "scored_count": len(scored_jobs),
                     "email_sent": False,
                     "dry_run": dry_run,
                 },
@@ -82,6 +115,8 @@ class NotificationAgent:
             metadata={
                 "input_count": len(job_list),
                 "alerted_count": len(alert_jobs),
+                "direct_count": len(direct_jobs),
+                "scored_count": len(scored_jobs),
                 "email_sent": email_sent,
                 "dry_run": dry_run,
             },

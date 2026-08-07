@@ -71,3 +71,24 @@ python -m job_radar agent-run \
 ```
 
 影子模式不会读写 SQLite，也不会发送邮件；完整岗位只在轨迹文件顶层保存一次，各 Agent 步骤仅保存岗位数量，避免轨迹重复膨胀。旧的 `run` 命令保留为手动回退入口。
+
+## 可选的大模型分析支线
+
+大模型不是采集器，也不替代毕业届别、链接安全和数据库去重等硬规则。当前实现从确定性
+影子链路拿到已清洗岗位后，进入独立的分析支线：
+
+```mermaid
+flowchart LR
+    D["确定性采集、资格与评分"] --> J["JDUnderstandingAgent<br/>只提取有证据的岗位要求"]
+    J --> M["SemanticMatchingAgent<br/>使用脱敏求职画像"]
+    M --> C["CriticAgent<br/>事实核验与分数校准"]
+    C -- "accept" --> O["JSON 分析报告"]
+    C -- "revise，最多一次" --> M
+    C -- "manual_review 或再次 revise" --> H["人工复核队列"]
+    O --> K["按内容哈希缓存"]
+    H --> K
+```
+
+三个 LLM Agent 均无工具权限，招聘文本始终作为不可信数据。输入画像经过字段白名单，
+姓名、邮箱、电话、照片和简历原文件不会发送。分析结果不写入 `job_radar.db`，不触发邮件，
+也不参与当前每日 GitHub 工作流。详见 [大模型多智能体说明](llm-multi-agent.md)。

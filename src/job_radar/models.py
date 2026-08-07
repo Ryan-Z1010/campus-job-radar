@@ -60,6 +60,14 @@ class JobPosting:
         years = values.get("graduation_years", [])
         if isinstance(years, (str, int)):
             years = [int(years)]
+        raw_score = values.get("score", 0)
+        try:
+            score = int(raw_score)
+        except (TypeError, ValueError):
+            score = 0
+        score_reasons = values.get("score_reasons", [])
+        if not isinstance(score_reasons, list):
+            score_reasons = []
         return cls(
             title=str(values.get("title", "")).strip(),
             company=str(values.get("company", "")).strip(),
@@ -73,4 +81,7 @@ class JobPosting:
             external_id=str(values.get("external_id", "")).strip(),
             published_at=str(values.get("published_at", "")).strip(),
             deadline=str(values.get("deadline", "")).strip(),
+            score=score,
+            score_reasons=[str(reason) for reason in score_reasons],
+            eligibility=str(values.get("eligibility", "待核对")).strip(),
         )

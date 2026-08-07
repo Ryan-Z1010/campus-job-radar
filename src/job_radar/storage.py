@@ -116,3 +116,15 @@ class JobStore:
                 (minimum_score,),
             )
         )
+
+    def new_jobs(self, jobs: Iterable[JobPosting]) -> List[JobPosting]:
+        """Return jobs whose fingerprints are not yet in this store."""
+
+        result = []
+        for job in jobs:
+            exists = self.connection.execute(
+                "SELECT 1 FROM jobs WHERE fingerprint = ?", (job.fingerprint,)
+            ).fetchone()
+            if not exists:
+                result.append(job)
+        return result

@@ -64,14 +64,15 @@ CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控�
 - 已接入小鹏集团 2027 届探索者计划官方活动提醒；
 - 已启用小马智行 2027 届校园招聘启动监控，官方届别尚未更新时保持静默；
 - 基于稳定指纹的 SQLite 去重；
-- 城市、企业类型、关键词、毕业年份的可解释评分；
+- 企业类型、关键词、毕业年份的可解释评分；城市只用于来源筛选和岗位信息展示，不参与加分；
 - HTML、JSON 和 Excel 可直接打开的 CSV 摘要；
 - SMTP 邮件提醒，凭据只从环境变量读取；
 - 来源可用性审计；
 - 瞬时网络错误有限重试，不掩盖 403、404 等确定性来源异常；
 - 单元测试和 GitHub Actions；
 - 除部分站点的公开接口加密兼容外，主要使用 Python 标准库；
-- 可审计的多 Agent 链路：编排、采集、资格判断、复核、存储和通知 Agent。
+- 可审计的多 Agent 链路：编排、采集、资格判断、复核、存储和通知 Agent；
+- 可选的大模型多智能体分析：JD 理解、语义匹配、独立审校、一次有界修订与内容缓存。
 
 ## 5 分钟体验
 
@@ -117,6 +118,36 @@ python -m job_radar agent-run \
 ```
 
 详细设计、安全边界和两种运行方式见 [架构说明](docs/architecture.md#多-agent-架构)。
+
+## 大模型多智能体分析（可选）
+
+`llm-analyze` 在确定性采集和硬性资格判断之后，依次运行
+`JDUnderstandingAgent`、`SemanticMatchingAgent` 和 `CriticAgent`。审校不通过时只允许
+修订一次，再不通过就进入人工复核。这个命令目前是安全的分析模式：不写入岗位主库、
+默认不发送邮件；只有显式加上 `--send-email` 才会把通过门槛的岗位交给 SMTP。
+
+先在本地 `.env` 中配置 `ARK_API_KEY`、`ARK_BASE_URL` 和 `ARK_MODEL`，建议在 `profile.local.json` 中补充不含姓名、
+邮箱和电话的 `skills`、`experience_highlights`、`project_highlights` 与
+`language_qualifications` 字符串数组，然后从一个演示来源、小批量岗位开始：
+
+```bash
+python -m job_radar llm-analyze \
+  --profile configs/profile.local.json \
+  --include-demo \
+  --source demo_official_jobs \
+  --max-jobs 3 \
+  --notification-preview-dir reports/llm/notification-preview
+```
+
+分析轨迹写入 `reports/llm/latest.json`，缓存写入
+`data/llm_analysis.sqlite3`。缓存键包含岗位内容、脱敏画像、模型和提示词版本；岗位或画像
+发生变化时会自动重新分析。调用豆包 Chat API 会消耗火山方舟额度，现有邮件 Secrets 不会被复用。
+分析报告会额外计算可投递门槛：央企/国企需硬性资格符合、岗位方向适配且 Critic 判定 accept；外企/私企还需达到默认 70 分。城市不参与加分，不满足条件时只进入人工复核，不会触发邮件。
+`--notification-preview-dir` 只生成通过门槛岗位的 HTML/JSON/CSV 预览，不会发送邮件。
+只有同时显式指定 `--send-email` 和预览目录，才会把通过门槛的岗位交给 SMTP；没有通过岗位时不会发送。
+发送成功的岗位指纹记录在 `data/llm_notification.sqlite3`，避免定时任务重复提醒；发送失败不会写入，后续运行会重试。
+实现范围、隐私字段和下一阶段验收条件见
+[大模型多智能体说明](docs/llm-multi-agent.md)。
 
 ## 使用自己的偏好
 
@@ -177,6 +208,10 @@ QQ 邮箱的本地配置与测试步骤见
 中国核工业集团、中国广核、国家能源集团和中国华能 10 家央企的 2027 校招官方入口
 监控；中国邮政使用官方公告指定的联招门户，国家电投若遇网关限制会保留来源错误并
 自动重试，不以空结果掩盖访问异常。
+本轮新增中国兵器工业集团、中国航空工业集团、中国航天科技集团、中国航天科工集团、
+中国电子科技集团、中国铁路通信信号集团、中航集团（国航）、中国中化、中国中冶和
+中国大唐 10 家央企的 2027 校招公开入口监控；对官网仍以 HTTP 或公告页承载招聘信息的
+来源，配置保留官方入口并在备注中标注，不绕过登录、验证码或涉密信息限制。
 其他动态站点在专用适配器完成前保持关闭。可以先运行审计：
 
 ```bash
@@ -190,9 +225,9 @@ python -m job_radar audit --sources configs/sources.json
 仓库包含两个工作流：
 
 - `ci.yml`：Pull Request 和 `main` 分支推送时执行测试与确定性 Agent 烟测；
-- `daily-monitor.yml`：北京时间每天约 09:17 执行多 Agent 正式监控，也支持手动选择 legacy 回退。
+- `daily-monitor.yml`：手动运行的确定性 Agent/legacy 回退入口。
 
-定时任务会在存在完整邮件 Secrets 时发送邮件，否则自动 dry-run；每次运行同时上传岗位报告和 Agent 决策轨迹。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
+- `llm-gated-monitor.yml`：按 UTC 计划运行 LLM 门槛分析，默认最多分析 3 个岗位；存在完整 Ark、SMTP 和画像 Secrets 时才发送通过门槛的岗位，否则只生成预览，并上传报告 artifact。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
 
 ## 项目结构
 
@@ -202,7 +237,7 @@ data/                    演示数据；运行数据库被忽略
 src/job_radar/           采集、清洗、评分、存储、通知、多 Agent 与 CLI
 tests/                   单元和端到端测试
 docs/                    架构、来源与部署文档
-.github/workflows/       CI 与每日监控
+.github/workflows/       CI、确定性回退与 LLM 门槛定时监控
 ```
 
 ## 边界与免责声明
@@ -223,6 +258,6 @@ CampusJobRadar 不是投递机器人，不会代替用户登录或提交简历�
 - 增加 RSS/微信公众号“人工转录入口”和变更检测；
 - 生成可部署的静态岗位看板；
 - 增加截止日期提醒和申请状态跟踪；
-- 可选接入大模型，对模糊 JD 做解释性分类，但不让模型替代硬性资格规则。
+- 用人工标注岗位集评估大模型语义匹配准确率，再决定是否接入每日通知主链路。
 
 欢迎阅读 [贡献指南](CONTRIBUTING.md) 后提交新的公开来源适配器。
