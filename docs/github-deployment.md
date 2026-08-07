@@ -33,6 +33,8 @@
 
 `LLM gated job monitor` 工作流负责定时执行 LLM 门槛分析：默认最多分析 3 个岗位，生成报告和通知预览；只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
 
+首次验证或排查来源时，建议手动运行并填写 `source_id=demo_official_jobs`、`include_demo=true`、`max_jobs=1`、`send_email=false`，这样只验证一条演示岗位的 LLM 链路，不必等待全部招聘来源采集。正式定时运行不填写 `source_id`，仍会扫描所有启用的真实来源。
+
 `Daily job monitor` 保留为手动确定性 Agent/legacy 回退入口，避免与 LLM 工作流重复发邮件。手动运行默认不发邮件，只有显式勾选 `send_email` 且 Secrets 完整时才会发送。
 
 GitHub 的定时任务使用 UTC，可能在高负载时延迟，且只运行默认分支上的工作流。公开仓库长期无活动时，GitHub 也可能停用 scheduled workflow。重要截止日期仍应回到招聘官网核对。
