@@ -71,6 +71,7 @@ CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控�
 - 瞬时网络错误有限重试，不掩盖 403、404 等确定性来源异常；
 - 单元测试和 GitHub Actions；
 - 纯 Python 标准库实现，无第三方运行依赖。
+- 可审计的多 Agent 影子链路：编排、采集、资格判断与复核 Agent；
 
 ## 5 分钟体验
 
@@ -89,6 +90,19 @@ python -m job_radar run --dry-run --include-demo
 - `reports/latest/jobs.csv`：可直接用 Excel 打开的岗位表。
 
 再次执行同一条命令时，新增数量应为 0，这说明去重有效。
+
+## 多 Agent 影子模式
+
+第一版多 Agent 架构已经可以独立运行，同时保持正式的每日抓取和邮件流程不变。它会让 `OrchestratorAgent` 依次协调 `CollectionAgent`、`EligibilityAgent` 和 `ReviewAgent`，并输出包含证据、警告、置信度和下一步操作的 JSON 决策轨迹。
+
+```bash
+python -m job_radar agent-run \
+  --include-demo \
+  --source demo_official_jobs \
+  --trace-file reports/agents/demo.json
+```
+
+影子模式不入库、不发送邮件，适合先对照现有结果进行验证。详细设计、安全边界和扩展方式见 [架构说明](docs/architecture.md#多-agent-影子架构)。
 
 ## 使用自己的偏好
 
@@ -171,7 +185,7 @@ python -m job_radar audit --sources configs/sources.json
 ```text
 configs/                 示例偏好与来源配置
 data/                    演示数据；运行数据库被忽略
-src/job_radar/           采集、清洗、评分、存储、通知与 CLI
+src/job_radar/           采集、清洗、评分、存储、通知、多 Agent 与 CLI
 tests/                   单元和端到端测试
 docs/                    架构、来源与部署文档
 .github/workflows/       CI 与每日监控

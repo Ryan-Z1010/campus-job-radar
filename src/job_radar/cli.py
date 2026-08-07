@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 
+from .agents import OrchestratorAgent, write_agent_trace
 from .audit import audit_sources
 from .config import ConfigError, load_dotenv, load_profile, load_sources
 from .notifications import send_email
@@ -25,6 +26,24 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--env-file", default=".env")
     run.add_argument("--dry-run", action="store_true", help="生成报告但不发送邮件")
     run.add_argument("--include-demo", action="store_true", help="显式启用演示岗位")
+
+    agent_run = subparsers.add_parser(
+        "agent-run",
+        help="以多 Agent 影子模式运行，不入库也不发送邮件",
+    )
+    agent_run.add_argument("--profile", default="configs/profile.example.json")
+    agent_run.add_argument("--sources", default="configs/sources.json")
+    agent_run.add_argument(
+        "--trace-file",
+        default="reports/agents/latest.json",
+        help="保存 Agent 决策轨迹的 JSON 文件",
+    )
+    agent_run.add_argument(
+        "--source",
+        action="append",
+        help="只运行指定来源 ID，可重复传入",
+    )
+    agent_run.add_argument("--include-demo", action="store_true", help="显式启用演示岗位")
 
     audit = subparsers.add_parser("audit", help="检查招聘来源是否可访问")
     audit.add_argument("--sources", default="configs/sources.json")
@@ -53,6 +72,24 @@ def main(argv=None) -> int:
             )
             print("测试邮件已发送。")
             return 0
+        if args.command == "agent-run":
+            result = OrchestratorAgent().run(
+                profile=load_profile(args.profile),
+                sources=load_sources(args.sources),
+                include_demo=args.include_demo,
+                source_ids=args.source,
+            )
+            trace_path = write_agent_trace(result, args.trace_file)
+            print(
+                "Agent来源 {0.source_total} | 成功 {0.completed_sources} | "
+                "失败 {0.failed_sources} | 采集 {0.collected} | "
+                "复核后 {0.reviewed} | 可继续 {0.ready} | "
+                "需人工核对 {0.review_required}".format(result)
+            )
+            print("决策轨迹: {}".format(trace_path))
+            for error in result.source_errors:
+                print("来源错误: {}".format(error), file=sys.stderr)
+            return 2 if result.failed_sources and result.collected == 0 else 0
 
         load_dotenv(args.env_file)
         result = run_pipeline(
