@@ -45,6 +45,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_run.add_argument("--include-demo", action="store_true", help="显式启用演示岗位")
 
+    agent_monitor = subparsers.add_parser(
+        "agent-monitor",
+        help="以多 Agent 正式模式采集、入库、生成报告并按需发邮件",
+    )
+    agent_monitor.add_argument("--profile", default="configs/profile.example.json")
+    agent_monitor.add_argument("--sources", default="configs/sources.json")
+    agent_monitor.add_argument("--database", default="data/job_radar.db")
+    agent_monitor.add_argument("--report-dir", default="reports/latest")
+    agent_monitor.add_argument(
+        "--trace-file",
+        default="reports/agents/latest.json",
+        help="保存完整 Agent 决策轨迹",
+    )
+    agent_monitor.add_argument("--env-file", default=".env")
+    agent_monitor.add_argument(
+        "--source",
+        action="append",
+        help="只运行指定来源 ID，可重复传入",
+    )
+    agent_monitor.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="正常入库并生成报告，但不发送邮件",
+    )
+    agent_monitor.add_argument(
+        "--include-demo", action="store_true", help="显式启用演示岗位"
+    )
+
     audit = subparsers.add_parser("audit", help="检查招聘来源是否可访问")
     audit.add_argument("--sources", default="configs/sources.json")
     audit.add_argument("--timeout", type=int, default=15)
@@ -90,6 +118,34 @@ def main(argv=None) -> int:
             for error in result.source_errors:
                 print("来源错误: {}".format(error), file=sys.stderr)
             return 2 if result.failed_sources and result.collected == 0 else 0
+        if args.command == "agent-monitor":
+            load_dotenv(args.env_file)
+            result = OrchestratorAgent().run(
+                profile=load_profile(args.profile),
+                sources=load_sources(args.sources),
+                include_demo=args.include_demo,
+                source_ids=args.source,
+                database=args.database,
+                report_dir=args.report_dir,
+                dry_run=args.dry_run,
+            )
+            trace_path = write_agent_trace(result, args.trace_file)
+            print(
+                "Agent来源 {0.source_total} | 成功 {0.completed_sources} | "
+                "失败 {0.failed_sources} | 采集 {0.collected} | "
+                "有效 {0.valid} | 新增 {0.inserted} | 更新 {0.updated} | "
+                "达到提醒阈值 {0.alerted} | 邮件 {1}".format(
+                    result, "已发送" if result.email_sent else "未发送"
+                )
+            )
+            print("决策轨迹: {}".format(trace_path))
+            for error in result.source_errors:
+                print("来源错误: {}".format(error), file=sys.stderr)
+            for error in result.pipeline_errors:
+                print("流程错误: {}".format(error), file=sys.stderr)
+            return 2 if result.pipeline_errors or (
+                result.source_errors and result.collected == 0
+            ) else 0
 
         load_dotenv(args.env_file)
         result = run_pipeline(

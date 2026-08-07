@@ -9,18 +9,21 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from ..models import JobPosting, utc_now_iso
 from .collection import CollectionAgent
 from .eligibility import EligibilityAgent
+from .notification import NotificationAgent
 from .review import ReviewAgent
-from .types import AgentStatus, AgentTrace
+from .storage import StorageAgent
+from .types import AgentResult, AgentStatus, AgentTrace
 
 
 @dataclass
 class MultiAgentRunResult:
-    """Auditable outcome of an OrchestratorAgent shadow run."""
+    """Auditable outcome of an OrchestratorAgent run."""
 
     run_id: str
     status: AgentStatus
     started_at: str
     finished_at: str
+    mode: str = "shadow"
     source_total: int = 0
     completed_sources: int = 0
     failed_sources: int = 0
@@ -29,15 +32,21 @@ class MultiAgentRunResult:
     reviewed: int = 0
     ready: int = 0
     review_required: int = 0
+    inserted: int = 0
+    updated: int = 0
+    alerted: int = 0
+    email_sent: bool = False
     jobs: List[JobPosting] = field(default_factory=list)
     traces: List[AgentTrace] = field(default_factory=list)
+    final_steps: List[AgentResult] = field(default_factory=list)
     source_errors: List[str] = field(default_factory=list)
+    pipeline_errors: List[str] = field(default_factory=list)
 
     def to_dict(self, include_jobs: bool = True) -> Dict[str, Any]:
         result = {
             "run_id": self.run_id,
             "orchestrator": "OrchestratorAgent",
-            "mode": "shadow",
+            "mode": self.mode,
             "status": self.status.value,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -50,9 +59,15 @@ class MultiAgentRunResult:
                 "reviewed": self.reviewed,
                 "ready": self.ready,
                 "review_required": self.review_required,
+                "inserted": self.inserted,
+                "updated": self.updated,
+                "alerted": self.alerted,
             },
+            "email_sent": self.email_sent,
             "source_errors": list(self.source_errors),
+            "pipeline_errors": list(self.pipeline_errors),
             "traces": [trace.to_dict() for trace in self.traces],
+            "final_steps": [step.to_dict() for step in self.final_steps],
         }
         if include_jobs:
             result["jobs"] = [job.to_dict() for job in self.jobs]
@@ -71,7 +86,7 @@ def _trace_status(steps) -> AgentStatus:
 
 
 class OrchestratorAgent:
-    """Coordinate specialist agents without changing the production pipeline."""
+    """Coordinate specialist agents in shadow or production mode."""
 
     name = "OrchestratorAgent"
 
@@ -80,10 +95,14 @@ class OrchestratorAgent:
         collection_agent: Optional[CollectionAgent] = None,
         eligibility_agent: Optional[EligibilityAgent] = None,
         review_agent: Optional[ReviewAgent] = None,
+        storage_agent: Optional[StorageAgent] = None,
+        notification_agent: Optional[NotificationAgent] = None,
     ):
         self.collection_agent = collection_agent or CollectionAgent()
         self.eligibility_agent = eligibility_agent or EligibilityAgent()
         self.review_agent = review_agent or ReviewAgent()
+        self.storage_agent = storage_agent or StorageAgent()
+        self.notification_agent = notification_agent or NotificationAgent()
 
     def run(
         self,
@@ -91,8 +110,15 @@ class OrchestratorAgent:
         sources: Iterable[Dict[str, Any]],
         include_demo: bool = False,
         source_ids: Optional[Iterable[str]] = None,
+        database: Optional[str] = None,
+        report_dir: Optional[str] = None,
+        dry_run: bool = False,
     ) -> MultiAgentRunResult:
         started_at = utc_now_iso()
+        production_requested = database is not None or report_dir is not None
+        if production_requested and (not database or not report_dir):
+            raise ValueError("正式 Agent 模式必须同时配置 database 和 report_dir")
+        mode = "production" if production_requested else "shadow"
         source_list = list(sources)
         requested: Optional[Set[str]] = set(source_ids) if source_ids else None
         available_ids = {str(source.get("id", "")) for source in source_list}
@@ -109,10 +135,11 @@ class OrchestratorAgent:
             and (requested is None or str(source.get("id", "")) in requested)
         ]
         result = MultiAgentRunResult(
-            run_id="agent-run-{}".format(uuid.uuid4().hex),
+            run_id="agent-{}-{}".format(mode, uuid.uuid4().hex),
             status=AgentStatus.SUCCESS,
             started_at=started_at,
             finished_at=started_at,
+            mode=mode,
             source_total=len(selected),
         )
 
@@ -150,10 +177,42 @@ class OrchestratorAgent:
                 AgentTrace(source_id, source_name, _trace_status(steps), steps)
             )
 
-        if result.failed_sources and result.completed_sources == 0:
+        if production_requested:
+            storage = self.storage_agent.run(result.jobs, database or "")
+            result.final_steps.append(storage)
+            if storage.status == AgentStatus.FAILED:
+                result.pipeline_errors.append(
+                    "{}: {}".format(storage.agent_name, storage.error)
+                )
+            else:
+                result.inserted = int(storage.metadata.get("inserted_count", 0))
+                result.updated = int(storage.metadata.get("updated_count", 0))
+                notification = self.notification_agent.run(
+                    storage.jobs,
+                    profile,
+                    report_dir or "",
+                    dry_run=dry_run,
+                )
+                result.final_steps.append(notification)
+                result.alerted = int(
+                    notification.metadata.get("alerted_count", 0)
+                )
+                result.email_sent = bool(
+                    notification.metadata.get("email_sent", False)
+                )
+                if notification.status == AgentStatus.FAILED:
+                    result.pipeline_errors.append(
+                        "{}: {}".format(notification.agent_name, notification.error)
+                    )
+
+        if result.pipeline_errors:
+            result.status = AgentStatus.FAILED
+        elif result.failed_sources and result.completed_sources == 0:
             result.status = AgentStatus.FAILED
         elif result.failed_sources or any(
             trace.status == AgentStatus.PARTIAL for trace in result.traces
+        ) or any(
+            step.status == AgentStatus.PARTIAL for step in result.final_steps
         ):
             result.status = AgentStatus.PARTIAL
         elif result.review_required:

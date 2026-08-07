@@ -70,8 +70,8 @@ CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控�
 - 来源可用性审计；
 - 瞬时网络错误有限重试，不掩盖 403、404 等确定性来源异常；
 - 单元测试和 GitHub Actions；
-- 纯 Python 标准库实现，无第三方运行依赖。
-- 可审计的多 Agent 影子链路：编排、采集、资格判断与复核 Agent；
+- 除部分站点的公开接口加密兼容外，主要使用 Python 标准库；
+- 可审计的多 Agent 链路：编排、采集、资格判断、复核、存储和通知 Agent。
 
 ## 5 分钟体验
 
@@ -79,7 +79,10 @@ CampusJobRadar 是一个面向校招求职者的本地优先招聘信息监控�
 
 ```bash
 python -m pip install -e .
-python -m job_radar run --dry-run --include-demo
+python -m job_radar agent-monitor \
+  --dry-run \
+  --include-demo \
+  --source demo_official_jobs
 ```
 
 结果会写入：
@@ -91,9 +94,20 @@ python -m job_radar run --dry-run --include-demo
 
 再次执行同一条命令时，新增数量应为 0，这说明去重有效。
 
-## 多 Agent 影子模式
+## 多 Agent 模式
 
-第一版多 Agent 架构已经可以独立运行，同时保持正式的每日抓取和邮件流程不变。它会让 `OrchestratorAgent` 依次协调 `CollectionAgent`、`EligibilityAgent` 和 `ReviewAgent`，并输出包含证据、警告、置信度和下一步操作的 JSON 决策轨迹。
+`OrchestratorAgent` 会依次协调 `CollectionAgent`、`EligibilityAgent`、`ReviewAgent`、`StorageAgent` 和 `NotificationAgent`。一次采集完成字段清洗、资格判断、复核、SQLite 去重、报告生成和邮件通知，同时输出包含证据、警告、置信度和下一步操作的 JSON 决策轨迹。
+
+正式模式会入库、生成报告；添加 `--dry-run` 后不发送邮件：
+
+```bash
+python -m job_radar agent-monitor \
+  --profile configs/profile.local.json \
+  --sources configs/sources.json \
+  --dry-run
+```
+
+需要调试某个来源时，可以使用不入库、不发送邮件的影子模式：
 
 ```bash
 python -m job_radar agent-run \
@@ -102,7 +116,7 @@ python -m job_radar agent-run \
   --trace-file reports/agents/demo.json
 ```
 
-影子模式不入库、不发送邮件，适合先对照现有结果进行验证。详细设计、安全边界和扩展方式见 [架构说明](docs/architecture.md#多-agent-影子架构)。
+详细设计、安全边界和两种运行方式见 [架构说明](docs/architecture.md#多-agent-架构)。
 
 ## 使用自己的偏好
 
@@ -113,7 +127,7 @@ cp configs/profile.example.json configs/profile.local.json
 编辑 `profile.local.json`。该文件已被 Git 忽略，不会意外公开。然后运行：
 
 ```bash
-python -m job_radar run \
+python -m job_radar agent-monitor \
   --profile configs/profile.local.json \
   --sources configs/sources.json \
   --dry-run
@@ -130,7 +144,7 @@ python -m job_radar run \
 复制 `.env.example` 为 `.env`，填写 SMTP 信息。推荐使用邮箱的“应用专用密码”，不要填写登录密码。确认 dry-run 报告无误后，移除 `--dry-run`：
 
 ```bash
-python -m job_radar run \
+python -m job_radar agent-monitor \
   --profile configs/profile.local.json \
   --sources configs/sources.json
 ```
@@ -175,10 +189,10 @@ python -m job_radar audit --sources configs/sources.json
 
 仓库包含两个工作流：
 
-- `ci.yml`：每次推送和 Pull Request 执行测试；
-- `daily-monitor.yml`：北京时间每天约 09:17 执行，也支持手动触发。
+- `ci.yml`：Pull Request 和 `main` 分支推送时执行测试与确定性 Agent 烟测；
+- `daily-monitor.yml`：北京时间每天约 09:17 执行多 Agent 正式监控，也支持手动选择 legacy 回退。
 
-定时任务会在存在完整邮件 Secrets 时发送邮件，否则自动 dry-run。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
+定时任务会在存在完整邮件 Secrets 时发送邮件，否则自动 dry-run；每次运行同时上传岗位报告和 Agent 决策轨迹。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
 
 ## 项目结构
 
