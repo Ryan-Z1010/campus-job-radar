@@ -30,7 +30,7 @@ class Batch100SourcesConfigTests(unittest.TestCase):
 
     def test_loader_includes_and_normalizes_the_batch(self):
         loaded = load_sources(str(self.base_path))
-        self.assertEqual(len(loaded), 440)
+        self.assertEqual(len(loaded), 485)
         by_id = {item["id"]: item for item in loaded}
         for item in self.batch:
             source = by_id[item["id"]]
