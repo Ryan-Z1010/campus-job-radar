@@ -12,6 +12,33 @@ class LlmClientError(RuntimeError):
     """A safe-to-display LLM transport or response error."""
 
 
+def _parse_structured_object(text: str, error_message: str) -> Dict[str, Any]:
+    """Parse one object from a model response without accepting a second payload.
+
+    Providers normally honor JSON mode, but a model can still wrap the object in
+    Markdown fences or a short explanation.  ``raw_decode`` lets us tolerate
+    that harmless wrapper while keeping the existing top-level-object contract;
+    schema validation remains the responsibility of the calling agent.
+    """
+
+    candidate = text.strip()
+    decoder = json.JSONDecoder()
+    search_from = 0
+    while True:
+        object_start = candidate.find("{", search_from)
+        if object_start < 0:
+            break
+        try:
+            data, _ = decoder.raw_decode(candidate[object_start:])
+        except json.JSONDecodeError:
+            search_from = object_start + 1
+            continue
+        if isinstance(data, dict):
+            return data
+        search_from = object_start + 1
+    raise LlmClientError(error_message)
+
+
 @dataclass
 class LlmResponse:
     data: Dict[str, Any]
@@ -156,12 +183,9 @@ class DoubaoChatClient:
             raise LlmClientError("豆包 Chat API 返回错误: {}".format(message))
 
         output_text = self._extract_chat_text(response_payload)
-        try:
-            data = json.loads(output_text)
-        except json.JSONDecodeError as exc:
-            raise LlmClientError("豆包输出未形成有效 JSON") from exc
-        if not isinstance(data, dict):
-            raise LlmClientError("豆包结构化输出顶层必须是对象")
+        data = _parse_structured_object(
+            output_text, "豆包输出未形成有效 JSON 对象"
+        )
         usage = response_payload.get("usage", {})
         return LlmResponse(
             data=data,
@@ -285,12 +309,9 @@ class OpenAIResponsesClient:
             raise LlmClientError("OpenAI API 响应不完整: {}".format(reason))
 
         output_text = self._extract_output_text(response_payload)
-        try:
-            data = json.loads(output_text)
-        except json.JSONDecodeError as exc:
-            raise LlmClientError("大模型输出未形成有效 JSON") from exc
-        if not isinstance(data, dict):
-            raise LlmClientError("大模型结构化输出顶层必须是对象")
+        data = _parse_structured_object(
+            output_text, "大模型输出未形成有效 JSON 对象"
+        )
 
         usage = response_payload.get("usage", {})
         return LlmResponse(
