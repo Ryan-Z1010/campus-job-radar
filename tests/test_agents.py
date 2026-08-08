@@ -121,6 +121,30 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(len(payload["jobs"]), 3)
         self.assertNotIn("jobs", payload["traces"][0]["steps"][0])
 
+    def test_orchestrator_can_collect_sources_concurrently_in_configured_order(self):
+        first = dict(self.demo_source, id="demo_first")
+        second = dict(self.demo_source, id="demo_second")
+        result = OrchestratorAgent().run(
+            self.profile,
+            [first, second],
+            include_demo=True,
+            collection_workers=2,
+        )
+        self.assertEqual(result.collected, 6)
+        self.assertEqual(
+            [trace.source_id for trace in result.traces],
+            ["demo_first", "demo_second"],
+        )
+
+    def test_orchestrator_rejects_invalid_collection_worker_count(self):
+        with self.assertRaisesRegex(ValueError, "collection_workers"):
+            OrchestratorAgent().run(
+                self.profile,
+                [self.demo_source],
+                include_demo=True,
+                collection_workers=0,
+            )
+
     def test_orchestrator_rejects_unknown_source_filter(self):
         with self.assertRaisesRegex(ValueError, "未找到来源 ID"):
             OrchestratorAgent().run(

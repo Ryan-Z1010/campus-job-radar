@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -113,7 +114,10 @@ class OrchestratorAgent:
         database: Optional[str] = None,
         report_dir: Optional[str] = None,
         dry_run: bool = False,
+        collection_workers: int = 1,
     ) -> MultiAgentRunResult:
+        if collection_workers < 1:
+            raise ValueError("collection_workers 必须大于 0")
         started_at = utc_now_iso()
         production_requested = database is not None or report_dir is not None
         if production_requested and (not database or not report_dir):
@@ -143,10 +147,18 @@ class OrchestratorAgent:
             source_total=len(selected),
         )
 
-        for source in selected:
+        if collection_workers == 1 or len(selected) < 2:
+            collections = [
+                self.collection_agent.run(source) for source in selected
+            ]
+        else:
+            worker_count = min(collection_workers, len(selected))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                collections = list(executor.map(self.collection_agent.run, selected))
+
+        for source, collection in zip(selected, collections):
             source_id = str(source.get("id", ""))
             source_name = str(source.get("name", source_id))
-            collection = self.collection_agent.run(source)
             result.collected += len(collection.jobs)
             steps = [collection]
 
