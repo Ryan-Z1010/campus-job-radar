@@ -13,6 +13,7 @@ from job_radar.cli import _read_doubao_key_file, main
 from job_radar.llm import (
     DoubaoChatClient,
     LlmAnalysisCache,
+    LlmClientError,
     LlmRecruitmentOrchestrator,
     LlmResponse,
     LlmRunResult,
@@ -260,6 +261,54 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(request_payload["messages"][0]["role"], "system")
         self.assertIn("test_schema", request_payload["messages"][0]["content"])
         self.assertEqual(response.data, {"answer": "ok"})
+
+    def test_doubao_client_tolerates_json_fence_and_explanation(self):
+        def opener(request, timeout):
+            return FakeHttpResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "下面是结果：\n```json\n"
+                                    '{"answer":"ok"}\n```\n'
+                                    "以上。"
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+        client = DoubaoChatClient("test-secret", "doubao-test", opener=opener)
+        response = client.complete(
+            agent_name="TestAgent",
+            instructions="Return structured data.",
+            input_data={"text": "hello"},
+            schema_name="test_schema",
+            schema={"type": "object"},
+        )
+        self.assertEqual(response.data, {"answer": "ok"})
+
+    def test_doubao_client_rejects_truncated_json(self):
+        def opener(request, timeout):
+            return FakeHttpResponse(
+                {
+                    "choices": [
+                        {"message": {"content": '{"answer":"missing brace"'}}
+                    ]
+                }
+            )
+
+        client = DoubaoChatClient("test-secret", "doubao-test", opener=opener)
+        with self.assertRaisesRegex(LlmClientError, "豆包输出未形成有效 JSON 对象"):
+            client.complete(
+                agent_name="TestAgent",
+                instructions="Return structured data.",
+                input_data={"text": "hello"},
+                schema_name="test_schema",
+                schema={"type": "object"},
+            )
 
     def test_doubao_client_retries_transient_connection_once(self):
         calls = []
