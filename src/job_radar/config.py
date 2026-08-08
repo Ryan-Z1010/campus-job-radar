@@ -84,17 +84,45 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
 
     base_dir = Path(path).resolve().parent.parent
     # Recruitment-season labels and graduation-cohort labels are not the
-    # same thing. In August 2026, employers may call the same upcoming
-    # cycle either "2026秋招" or "2027届校园招聘". Keep both families so a
+    # same thing. The active monitoring window is 2026-07-01 through
+    # 2027-06-30, so portals may describe a matching campaign as 2026
+    # second-half recruitment, 2026 autumn recruitment, 2027 spring
+    # recruitment, or 2027-campus hiring. Keep all common labels so a
     # campaign watch does not miss an announcement merely because the portal
     # uses the season year instead of the cohort year. Eligibility still
     # needs to be checked from the linked official notice.
     campaign_keywords = [
+        "2026下半年招聘",
+        "2026年下半年招聘",
+        "2026下半年校招",
+        "2026年下半年校招",
+        "2026下半年校园招聘",
+        "2026年下半年校园招聘",
         "2026秋招",
         "2026届秋招",
+        "2026秋季招聘",
+        "2026年秋季招聘",
         "2026秋季校园招聘",
         "2026年秋季校园招聘",
         "2026届秋季校园招聘",
+        "2026-2027校园招聘",
+        "2026-2027年校园招聘",
+        "2026-2027年度校园招聘",
+        "2026-2027年秋季校园招聘",
+        "2026-2027年度秋季校园招聘",
+        "2027上半年招聘",
+        "2027年上半年招聘",
+        "2027上半年校招",
+        "2027年上半年校招",
+        "2027上半年校园招聘",
+        "2027年上半年校园招聘",
+        "2027春招",
+        "2027届春招",
+        "2027春季招聘",
+        "2027年春季招聘",
+        "2027春季校园招聘",
+        "2027年春季校园招聘",
+        "2027届春季校园招聘",
         "2027校园招聘",
         "2027届校园招聘",
         "2027年校园招聘",
@@ -109,13 +137,13 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
         if normalized.get("type") == "campaign_watch":
             configured_keywords = normalized.get("target_keywords")
             if configured_keywords:
-                # Preserve source-specific markers while adding the current
-                # autumn-season vocabulary. This covers portals that announce
-                # the 2026 recruitment season even when their source config
-                # was originally written around the 2027 cohort.
+                # Preserve source-specific markers while adding the complete
+                # active-window vocabulary. This covers portals that announce
+                # the recruitment season even when their source config was
+                # originally written around only one cohort label.
                 normalized["target_keywords"] = list(
                     dict.fromkeys(
-                        list(configured_keywords) + campaign_keywords[:5]
+                        list(configured_keywords) + campaign_keywords
                     )
                 )
             else:
@@ -128,6 +156,9 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
             )
             normalized.setdefault("location", "北京、上海、广州、深圳及全国所属单位")
             normalized.setdefault("graduation_years", [2027])
+            normalized.setdefault(
+                "campaign_window", {"start": "2026-07-01", "end": "2027-06-30"}
+            )
             normalized.setdefault("description", "请进入官方入口核对AI、数据、软件与数字化岗位。")
             normalized.setdefault("education", "应届毕业生，具体要求以官方公告为准")
             fallback = _campaign_fallback(normalized)
