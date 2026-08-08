@@ -5767,10 +5767,21 @@ class CampaignWatchCollector(Collector):
 
     def collect(self) -> List[JobPosting]:
         homepage = self.source["homepage"]
-        body = fetch_bytes(
-            homepage,
-            headers=self.source.get("headers"),
-        ).decode("utf-8", errors="replace")
+        active_homepage = homepage
+        try:
+            body = fetch_bytes(
+                homepage,
+                headers=self.source.get("headers"),
+            ).decode("utf-8", errors="replace")
+        except Exception:
+            fallback = self.source.get("fallback_homepage", "")
+            if not fallback or fallback == homepage:
+                raise
+            active_homepage = fallback
+            body = fetch_bytes(
+                fallback,
+                headers=self.source.get("fallback_headers"),
+            ).decode("utf-8", errors="replace")
         parser = _LinkParser()
         parser.feed(body)
         visible_text = " ".join(" ".join(parser.text_parts).split())
@@ -5780,7 +5791,24 @@ class CampaignWatchCollector(Collector):
 
         required_text = self.source.get("required_text", "")
         if required_text and required_text not in searchable_text:
-            raise ValueError("活动监控页未出现预期标识，可能已经改版")
+            fallback = self.source.get("fallback_homepage", "")
+            if not fallback or fallback == homepage:
+                raise ValueError("活动监控页未出现预期标识，可能已经改版")
+            if active_homepage == homepage:
+                body = fetch_bytes(
+                    fallback,
+                    headers=self.source.get("fallback_headers"),
+                ).decode("utf-8", errors="replace")
+                active_homepage = fallback
+                parser = _LinkParser()
+                parser.feed(body)
+                visible_text = " ".join(" ".join(parser.text_parts).split())
+                searchable_text = (
+                    body if self.source.get("search_raw_html") else visible_text
+                )
+            fallback_required_text = self.source.get("fallback_required_text", "")
+            if fallback_required_text and fallback_required_text not in searchable_text:
+                raise ValueError("主页面与官方兜底入口均未出现预期标识")
 
         target_keywords = self.source.get("target_keywords", [])
         compacted_text = "".join(searchable_text.lower().split())
@@ -5797,12 +5825,12 @@ class CampaignWatchCollector(Collector):
 
         link_keywords = list(self.source.get("link_keywords", []))
         link_keywords.append(matched_keyword)
-        campaign_url = homepage
+        campaign_url = active_homepage
         for link in parser.links:
             candidate_text = " ".join(link["text"].split())
             searchable = "{} {}".format(candidate_text, link["href"]).lower()
             if any(keyword.lower() in searchable for keyword in link_keywords):
-                campaign_url = urljoin(homepage, link["href"])
+                campaign_url = urljoin(active_homepage, link["href"])
                 break
 
         values = {

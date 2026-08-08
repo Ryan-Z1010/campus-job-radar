@@ -10,6 +10,34 @@ class ConfigError(ValueError):
     pass
 
 
+def _campaign_fallback(source: Dict[str, Any]) -> Dict[str, str]:
+    """Return an official, read-only fallback portal for campaign watches.
+
+    A number of state-owned enterprise sites are intermittently unavailable to
+    automated clients (timeouts, TLS errors, or anti-bot responses).  The
+    enterprise homepage remains the primary source; this fallback is only used
+    by the collector when the primary page cannot be read or its marker is
+    temporarily unavailable.
+    """
+    location = str(source.get("location", ""))
+    portals = [
+        ("北京", "https://gzw.beijing.gov.cn/", "国资"),
+        ("上海", "https://www.gzw.sh.gov.cn/", "国资"),
+        ("深圳", "https://gzw.sz.gov.cn/", "国资"),
+        ("广州", "https://gzw.gz.gov.cn/", "国资"),
+        ("重庆", "https://gzw.cq.gov.cn/", "国资"),
+        ("湖南", "https://gzw.hunan.gov.cn/", "国资"),
+        ("福建", "https://gzw.fujian.gov.cn/", "国资"),
+    ]
+    for city, homepage, required_text in portals:
+        if city in location:
+            return {
+                "homepage": homepage,
+                "required_text": required_text,
+            }
+    return {"homepage": "https://www.gov.cn/", "required_text": "国务院"}
+
+
 def load_json(path: str) -> Dict[str, Any]:
     config_path = Path(path)
     try:
@@ -77,6 +105,11 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
             normalized.setdefault("graduation_years", [2027])
             normalized.setdefault("description", "请进入官方入口核对AI、数据、软件与数字化岗位。")
             normalized.setdefault("education", "应届毕业生，具体要求以官方公告为准")
+            fallback = _campaign_fallback(normalized)
+            normalized.setdefault("fallback_homepage", fallback["homepage"])
+            normalized.setdefault(
+                "fallback_required_text", fallback["required_text"]
+            )
         result.append(normalized)
     return result
 

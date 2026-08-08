@@ -5615,6 +5615,37 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(jobs, [])
 
     @patch("job_radar.collectors.fetch_bytes")
+    def test_campaign_watch_uses_official_fallback_when_primary_is_unavailable(
+        self, fetch
+    ):
+        fetch.side_effect = [
+            OSError("primary page unavailable"),
+            (
+                "<main><h2>国资委公告</h2>"
+                '<a href="/2027-campus">2027校园招聘</a></main>'
+            ).encode("utf-8"),
+        ]
+        source = {
+            "id": "soe-fallback",
+            "name": "测试国企",
+            "type": "campaign_watch",
+            "homepage": "https://company.example.com/",
+            "fallback_homepage": "https://gzw.example.gov.cn/",
+            "fallback_required_text": "国资委",
+            "required_text": "测试国企",
+            "target_keywords": ["2027校园招聘"],
+            "title": "测试国企2027校园招聘已启动",
+            "company": "测试国企",
+            "company_type": "国企",
+        }
+
+        jobs = CampaignWatchCollector(source).collect()
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].url, "https://gzw.example.gov.cn/2027-campus")
+        self.assertEqual(fetch.call_count, 2)
+
+    @patch("job_radar.collectors.fetch_bytes")
     def test_campaign_watch_emits_official_launch_link_once_keyword_appears(
         self, fetch
     ):
