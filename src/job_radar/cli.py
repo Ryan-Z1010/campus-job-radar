@@ -152,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="进入可投递门槛的最低 LLM 分数，默认 70",
     )
     llm_analyze.add_argument(
+        "--collection-workers",
+        type=int,
+        default=4,
+        help="确定性来源并行采集数；默认 4，设为 1 可恢复串行",
+    )
+    llm_analyze.add_argument(
         "--model",
         help="豆包模型或推理接入点；默认读取 ARK_MODEL/DOUBAO_MODEL",
     )
@@ -213,6 +219,7 @@ def main(argv=None) -> int:
                 sources=load_sources(args.sources),
                 include_demo=args.include_demo,
                 source_ids=args.source,
+                collection_workers=args.collection_workers,
             )
             api_key = (
                 os.environ.get("ARK_API_KEY")
