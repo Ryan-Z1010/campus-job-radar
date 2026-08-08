@@ -41,6 +41,8 @@ class LlmRunResult:
     needs_review: int = 0
     failed: int = 0
     notify_eligible: int = 0
+    deterministic_source_errors: List[str] = field(default_factory=list)
+    deterministic_counts: Dict[str, int] = field(default_factory=dict)
     analyses: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -66,6 +68,10 @@ class LlmRunResult:
                 "notification_gate_only": True,
                 "max_semantic_revisions_per_job": 1,
                 "profile_is_sanitized": True,
+            },
+            "deterministic": {
+                "counts": dict(self.deterministic_counts),
+                "source_errors": list(self.deterministic_source_errors),
             },
             "analyses": list(self.analyses),
         }

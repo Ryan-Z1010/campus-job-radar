@@ -256,6 +256,19 @@ def main(argv=None) -> int:
                 max_jobs=args.max_jobs,
                 notify_min_score=args.notify_min_score,
             )
+            result.deterministic_source_errors = list(
+                deterministic.source_errors
+            )
+            result.deterministic_counts = {
+                "source_total": deterministic.source_total,
+                "completed_sources": deterministic.completed_sources,
+                "failed_sources": deterministic.failed_sources,
+                "collected": deterministic.collected,
+                "valid": deterministic.valid,
+                "reviewed": deterministic.reviewed,
+                "ready": deterministic.ready,
+                "review_required": deterministic.review_required,
+            }
             report_path = write_llm_report(result, args.output)
             print(
                 "LLM选中 {0.selected} | 完成 {0.analyzed} | "
