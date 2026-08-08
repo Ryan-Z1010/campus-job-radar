@@ -5767,7 +5767,10 @@ class CampaignWatchCollector(Collector):
 
     def collect(self) -> List[JobPosting]:
         homepage = self.source["homepage"]
-        body = fetch_bytes(homepage).decode("utf-8", errors="replace")
+        body = fetch_bytes(
+            homepage,
+            headers=self.source.get("headers"),
+        ).decode("utf-8", errors="replace")
         parser = _LinkParser()
         parser.feed(body)
         visible_text = " ".join(" ".join(parser.text_parts).split())

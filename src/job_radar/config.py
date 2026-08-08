@@ -38,12 +38,45 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
     sources = data.get("sources")
     if not isinstance(sources, list):
         raise ConfigError("来源配置必须包含 sources 数组")
+    include_paths = data.get("includes", [])
+    if include_paths is None:
+        include_paths = []
+    if not isinstance(include_paths, list) or not all(
+        isinstance(item, str) and item.strip() for item in include_paths
+    ):
+        raise ConfigError("来源配置 includes 必须是非空字符串数组")
+    config_dir = Path(path).resolve().parent
+    for include in include_paths:
+        include_path = config_dir / include
+        included = load_json(str(include_path))
+        included_sources = included.get("sources")
+        if not isinstance(included_sources, list):
+            raise ConfigError("来源配置 include 文件必须包含 sources 数组: {}".format(include_path))
+        sources.extend(included_sources)
+
     base_dir = Path(path).resolve().parent.parent
+    campaign_keywords = [
+        "2027校园招聘",
+        "2027届校园招聘",
+        "2027年校园招聘",
+        "2027秋招",
+        "2027届秋招",
+    ]
     result = []
     for source in sources:
         normalized = dict(source)
         if normalized.get("path") and not Path(normalized["path"]).is_absolute():
             normalized["path"] = str(base_dir / normalized["path"])
+        if normalized.get("type") == "campaign_watch":
+            normalized.setdefault("target_keywords", campaign_keywords)
+            normalized.setdefault(
+                "title",
+                "{}（等待2027届公告）".format(normalized.get("name", normalized["id"])),
+            )
+            normalized.setdefault("location", "北京、上海、广州、深圳及全国所属单位")
+            normalized.setdefault("graduation_years", [2027])
+            normalized.setdefault("description", "请进入官方入口核对AI、数据、软件与数字化岗位。")
+            normalized.setdefault("education", "应届毕业生，具体要求以官方公告为准")
         result.append(normalized)
     return result
 
