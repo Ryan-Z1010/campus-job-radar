@@ -320,6 +320,24 @@ class LlmAgentTests(unittest.TestCase):
         self.assertFalse(analysis["notify_eligible"])
         self.assertEqual(result.notify_eligible, 0)
 
+    def test_llm_report_preserves_deterministic_source_diagnostics(self):
+        result = LlmRunResult(
+            model="test-model",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:00:01+00:00",
+            deterministic_source_errors=["测试来源: HTTP 503"],
+            deterministic_counts={
+                "source_total": 4,
+                "completed_sources": 3,
+                "failed_sources": 1,
+            },
+        )
+        payload = result.to_dict()
+        self.assertEqual(payload["deterministic"]["counts"]["source_total"], 4)
+        self.assertEqual(
+            payload["deterministic"]["source_errors"], ["测试来源: HTTP 503"]
+        )
+
     def test_notification_gate_requires_deterministic_eligibility(self):
         self.job.eligibility = "符合"
         client = ScriptedClient([jd_response(), match_response(82), critic_response()])
