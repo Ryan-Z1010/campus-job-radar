@@ -1,5 +1,5 @@
 {
-  "includes": ["sources.batch100.json", "sources.batch200.json", "sources.batch45.four-city-gaps.json", "sources.batch13.market-infrastructure.json"],
+  "includes": ["sources.batch100.json", "sources.batch200.json", "sources.batch45.four-city-gaps.json", "sources.batch13.market-infrastructure.json", "sources.batch14.foreign-top50.json"],
   "sources": [
     {
       "id": "demo_official_jobs",

@@ -24,9 +24,9 @@ class Batch13MarketInfrastructureConfigTests(unittest.TestCase):
     def test_batch_is_loaded_and_covers_active_window_markers(self):
         sources = load_sources("configs/sources.json")
         by_id = {item["id"]: item for item in sources}
-        self.assertEqual(len(by_id), 497)
+        self.assertEqual(len(by_id), 547)
         self.assertEqual(
-            sum(item["type"] == "campaign_watch" for item in sources), 436
+            sum(item["type"] == "campaign_watch" for item in sources), 486
         )
         for item in self.batch:
             source = by_id[item["id"]]
