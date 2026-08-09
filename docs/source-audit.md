@@ -1692,3 +1692,26 @@ DNS 等访问限制阻断时切换到对应城市国资委/国务院官网，最
 
 本批次不发送测试邮件。下一轮继续补充时，应优先把目前“官方名录兜底”的来源替换为企业招聘页、校园招聘
 专题或公开岗位接口，并在表格中保留“已接入/待补充”两种状态的区别。
+
+## 已启用：证券/期货交易所及金融市场基础设施（12 家）
+
+2026-08-09 在北上广深优先央国企池基础上新增 12 家交易所、登记结算与清算机构，配置拆分在
+`configs/sources.batch13.market-infrastructure.json`，由 `configs/sources.json` 的 `includes` 加载。新增机构为：
+上海证券交易所、深圳证券交易所、北京证券交易所、全国中小企业股份转让系统有限责任公司、中国金融期货交易所、
+上海期货交易所、上海国际能源交易中心、广州期货交易所、大连商品交易所、中国证券登记结算有限责任公司、
+银行间市场清算所股份有限公司（上海清算所）和上海黄金交易所。
+
+入口均保留官方站点或官方招聘栏目：上海证券交易所的[招聘信息页](https://www.sse.com.cn/aboutus/recruitment/sse/index.shtml)、
+深圳证券交易所的[在线招聘页](https://www.szse.cn/aboutus/online/index.html)、北京证券交易所的[人才招聘页](https://www.bse.cn/company/recruit.html)、
+全国股转系统的[官方介绍页](https://www.neeq.com.cn/m/company/introduce.html)、中国金融期货交易所的[招聘栏目](https://www.cffex.com.cn/zpxx/)、
+上海期货交易所的[人才招聘页](https://www.shfe.com.cn/about/introduce/job/)、上期能源的[人才招聘页](https://www.ine.cn/about/job/)、
+广州期货交易所的[官方站点](https://www.gfex.com.cn/)、大连商品交易所的[官方门户](https://extportal.dce.com.cn/file/pc/index.html)、
+中国结算的[官方站点](https://www.chinaclear.cn/)、上海清算所的[招聘页](https://www.shclearing.com.cn/career/)和上海黄金交易所的[人才招聘页](https://www.sge.com.cn/gyjjs/rczp)。
+
+逐条连通性审计结果为 12/12 可访问：10 个入口返回 200，北交所和全国股转系统返回官方重定向响应，仍能确认站点可达；
+中金所使用官方 HTTP 招聘入口，大商所使用官方外部门户以避开主站前端跳转。郑州商品交易所本轮未纳入：其公开入口持续返回
+官方 412 风控挑战，待出现稳定的公开招聘页后再接入，不绕过验证码或访问控制。
+
+本批次全部标记为 `campaign_watch`，统一纳入 2026-07-01 至 2027-06-30 时间窗，并识别“2026 下半年/秋招”、
+“2027 上半年/春招”及“2027 校招”等公告关键词。追踪表目标公司池新增序号 472—483，状态统一为“已接入”；
+机构在评分中按“国企”优先级处理，实际劳动合同主体和招聘资格以各机构正式公告为准。
