@@ -5,29 +5,27 @@ from pathlib import Path
 from job_radar.config import load_sources
 
 
-class Batch14ForeignTop50ConfigTests(unittest.TestCase):
+class Batch15HotCompaniesConfigTests(unittest.TestCase):
     ROOT = Path(__file__).parents[1]
-    CONFIG = ROOT / "configs" / "sources.batch14.foreign-top50.json"
+    CONFIG = ROOT / "configs" / "sources.batch15.hot-companies.json"
     BASE = ROOT / "configs" / "sources.json"
 
     def setUp(self):
-        self.data = json.loads(self.CONFIG.read_text(encoding="utf-8"))
-        self.batch = self.data["sources"]
+        self.batch = json.loads(self.CONFIG.read_text(encoding="utf-8"))["sources"]
 
-    def test_batch_has_fifty_unique_enabled_foreign_sources(self):
-        self.assertEqual(len(self.batch), 50)
-        self.assertEqual(len({item["id"] for item in self.batch}), 50)
-        self.assertEqual(len({item["company"] for item in self.batch}), 50)
+    def test_batch_has_one_hundred_unique_enabled_sources(self):
+        self.assertEqual(len(self.batch), 100)
+        self.assertEqual(len({item["id"] for item in self.batch}), 100)
+        self.assertEqual(len({item["company"] for item in self.batch}), 100)
         self.assertTrue(all(item["enabled"] for item in self.batch))
         self.assertTrue(all(item["type"] == "campaign_watch" for item in self.batch))
-        self.assertTrue(all(item["company_type"] == "外企" for item in self.batch))
-        self.assertTrue(all(item.get("homepage") for item in self.batch))
-        self.assertTrue(all(item.get("fallback_homepage") for item in self.batch))
+        self.assertTrue(all(item["company_type"] in {"私企", "国企", "外企"} for item in self.batch))
+        self.assertTrue(all(item.get("homepage") and item.get("fallback_homepage") for item in self.batch))
 
-    def test_batch_is_disjoint_from_existing_source_companies(self):
-        base = json.loads(self.BASE.read_text(encoding="utf-8"))
-        existing = {item.get("company") for item in base["sources"] if item.get("company")}
-        for include in base.get("includes", []):
+    def test_batch_is_disjoint_from_all_existing_companies(self):
+        data = json.loads(self.BASE.read_text(encoding="utf-8"))
+        existing = {item.get("company") for item in data["sources"] if item.get("company")}
+        for include in data.get("includes", []):
             if include == self.CONFIG.name:
                 continue
             included = json.loads((self.ROOT / "configs" / include).read_text(encoding="utf-8"))
@@ -43,7 +41,6 @@ class Batch14ForeignTop50ConfigTests(unittest.TestCase):
             source = by_id[item["id"]]
             self.assertIn("2026秋招", source["target_keywords"], item["id"])
             self.assertIn("2027春招", source["target_keywords"], item["id"])
-            self.assertIn("2027 graduate", source["target_keywords"], item["id"])
             self.assertEqual(source["campaign_window"], {"start": "2026-07-01", "end": "2027-06-30"})
             self.assertTrue(source["fallback_required_text"], item["id"])
 
