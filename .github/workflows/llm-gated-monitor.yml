@@ -24,7 +24,10 @@ on:
         default: 50
         type: number
   schedule:
-    - cron: "47 1 * * *"
+    # GitHub cron is UTC. Run at both possible UTC hours and let the shell
+    # guard below keep only 17:00 Australia/Sydney across daylight saving.
+    - cron: "0 6 * * *"
+    - cron: "0 7 * * *"
 
 permissions:
   contents: read
@@ -74,6 +77,13 @@ jobs:
           MAX_JOBS: ${{ inputs.max_jobs || 50 }}
         run: |
           set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
+            sydney_hour="$(TZ=Australia/Sydney date +%H)"
+            if [ "$sydney_hour" != "17" ]; then
+              echo "跳过本次 UTC 触发：当前悉尼时间不是 17:00（小时=$sydney_hour）。"
+              exit 0
+            fi
+          fi
           profile_path="configs/profile.example.json"
           if [ -n "${LLM_PROFILE_JSON:-}" ]; then
             profile_path="${RUNNER_TEMP}/profile.ci.json"

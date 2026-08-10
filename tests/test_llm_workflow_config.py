@@ -13,6 +13,9 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn("default: 50", workflow)
         self.assertIn("MAX_JOBS: ${{ inputs.max_jobs || 50 }}", workflow)
         self.assertIn('--max-jobs "${MAX_JOBS:-50}"', workflow)
+        self.assertIn('cron: "0 6 * * *"', workflow)
+        self.assertIn('cron: "0 7 * * *"', workflow)
+        self.assertIn('TZ=Australia/Sydney date +%H', workflow)
 
 
 if __name__ == "__main__":
