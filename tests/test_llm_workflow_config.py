@@ -1,0 +1,19 @@
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class LlmWorkflowConfigTests(unittest.TestCase):
+    def test_scheduled_workflow_defaults_to_ten_llm_jobs(self):
+        workflow = (
+            ROOT / ".github/workflows/llm-gated-monitor.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("default: 10", workflow)
+        self.assertIn("MAX_JOBS: ${{ inputs.max_jobs || 10 }}", workflow)
+        self.assertIn('--max-jobs "${MAX_JOBS:-10}"', workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -198,8 +198,10 @@ python -m job_radar agent-monitor \
 演示数据只有加上 `--include-demo` 才会进入流程，因此定时任务不会误发虚构岗位。
 
 对于境外高校毕业时间处于届别交界的情况，可使用
-`review_graduation_years`。例如 2026 年 11 月毕业时，把 2027 放入该数组，
-系统会保留 2027 届岗位并标记为“需核对”，而不是直接判断不符合。
+`review_graduation_years` 和 `accepted_recruitment_windows`。当前示例画像明确接受
+`2026秋招` 与 `2027春招`：岗位原文出现对应招聘季标识，或官方发布时间落在相应半年窗口，
+且届别与画像匹配时会标记为“符合”；招聘季缺失或出现 `2027秋招` 时仍标记为“需核对”，
+不会仅凭“2027届”自动放行。若岗位没有完整发布时间或季节标识，系统继续保留人工核对兜底。
 
 ## 邮件提醒
 
@@ -258,7 +260,7 @@ python -m job_radar audit --sources configs/sources.json
 - `ci.yml`：Pull Request 和 `main` 分支推送时执行测试与确定性 Agent 烟测；
 - `daily-monitor.yml`：手动运行的确定性 Agent/legacy 回退入口。
 
-- `llm-gated-monitor.yml`：按 UTC 计划运行 LLM 门槛分析，默认最多分析 3 个岗位；存在完整 Ark、SMTP 和画像 Secrets 时发送通过门槛岗位及新的人工复核摘要，否则只生成预览，并上传报告 artifact。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
+- `llm-gated-monitor.yml`：按 UTC 计划运行 LLM 门槛分析，默认最多分析 10 个岗位；存在完整 Ark、SMTP 和画像 Secrets 时发送通过门槛岗位及新的人工复核摘要，否则只生成预览，并上传报告 artifact。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
 
 ## 项目结构
 

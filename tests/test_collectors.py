@@ -5677,6 +5677,7 @@ class CollectorTests(unittest.TestCase):
             jobs[0].url, "https://campus.example.com/2027"
         )
         self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("2027届校园招聘", jobs[0].description)
 
     @patch("job_radar.collectors.fetch_bytes")
     def test_campaign_watch_ignores_previous_china_telecom_campaign(self, fetch):

@@ -5842,7 +5842,9 @@ class CampaignWatchCollector(Collector):
             "company": self.source.get("company", self.source["name"]),
             "company_type": self.source.get("company_type", "未知"),
             "location": self.source.get("location", "待核对"),
-            "description": self.source.get("description", ""),
+            "description": "{} 官方页面命中招聘窗口标识：{}".format(
+                self.source.get("description", ""), matched_keyword
+            ).strip(),
             "education": self.source.get("education", ""),
             "graduation_years": self.source.get("graduation_years", []),
             "published_at": self.source.get("published_at", ""),

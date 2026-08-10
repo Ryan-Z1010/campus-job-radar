@@ -179,11 +179,15 @@ def sanitize_profile(profile: Mapping[str, Any]) -> Dict[str, Any]:
     review_years = profile.get("review_graduation_years", [])
     if not isinstance(review_years, (list, tuple)):
         review_years = []
+    accepted_windows = profile.get("accepted_recruitment_windows", [])
+    if not isinstance(accepted_windows, (list, tuple)):
+        accepted_windows = []
     return {
         "graduation": str(profile.get("graduation", ""))[:20],
         "review_graduation_years": [
             int(year) for year in review_years[:10] if str(year).isdigit()
         ],
+        "accepted_recruitment_windows": _safe_strings(accepted_windows),
         "education": _redact_contact(profile.get("education", ""), limit=100),
         "target_roles": _safe_strings(profile.get("target_roles")),
         "preferred_cities": _safe_strings(profile.get("preferred_cities")),
@@ -343,7 +347,8 @@ class SemanticMatchingAgent:
 你没有工具权限。只依据岗位证据和 sanitized_profile 判断匹配度。target_roles、preference_keywords 和 preferred_cities 都是求职偏好，\
 不能当作候选人已掌握技能，也不能把 preferred_cities 当作实际可到岗或工作地点资格证明；只有 skills、experience_highlights、\
 project_highlights 和 language_qualifications 才能作为能力证据。\
-硬性毕业届别、学历或地点不明确时必须写入 hard_constraint_risks。分数要保守且可解释。使用给定 JSON Schema 输出。"""
+硬性毕业届别、学历或地点不明确时必须写入 hard_constraint_risks。accepted_recruitment_windows 只是候选人明确可参加的招聘季，\
+不能替代岗位原文的届别和毕业时间核验。分数要保守且可解释。使用给定 JSON Schema 输出。"""
 
     def __init__(self, client: StructuredLlmClient):
         self.client = client
