@@ -27,11 +27,11 @@
 
 ## 4. 数据持久化
 
-工作流用 GitHub Actions cache 保存 `data/llm_analysis.sqlite3` 分析缓存和 `data/llm_notification.sqlite3` 已成功发送岗位指纹，并上传当次岗位报告和通知预览 artifact。通知指纹只有在 SMTP 发送成功后才写入；Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
+工作流用 GitHub Actions cache 保存 `data/llm_analysis.sqlite3` 分析缓存、`data/llm_notification.sqlite3` 推荐通知指纹和 `data/llm_review_notification.sqlite3` 人工复核通知指纹，并上传当次岗位报告和通知预览 artifact。通知指纹只有在 SMTP 发送成功后才写入；Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
 
 ## 5. 调度注意事项
 
-`LLM gated job monitor` 工作流负责定时执行 LLM 门槛分析：默认最多分析 3 个岗位，并以 4 个并行采集 worker 获取来源，生成报告和通知预览；只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
+`LLM gated job monitor` 工作流负责定时执行 LLM 门槛分析：默认最多分析 3 个岗位，并以 4 个并行采集 worker 获取来源，生成报告和通知预览；只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和新的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
 `reports/llm/latest.json` 同时记录确定性采集的来源统计和来源错误，便于区分“当前没有岗位”和“来源暂时不可访问”。
 
 首次验证或排查来源时，建议手动运行并填写 `source_id=demo_official_jobs`、`include_demo=true`、`max_jobs=1`、`send_email=false`，这样只验证一条演示岗位的 LLM 链路，不必等待全部招聘来源采集。正式定时运行不填写 `source_id`，仍会扫描所有启用的真实来源。

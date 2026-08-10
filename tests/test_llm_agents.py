@@ -18,7 +18,10 @@ from job_radar.llm import (
     LlmResponse,
     LlmRunResult,
     OpenAIResponsesClient,
+    manual_review_analyses,
     send_llm_notification_email,
+    send_llm_review_notification_email,
+    write_llm_review_preview,
     write_llm_notification_preview,
 )
 from job_radar.llm.agents import sanitize_profile
@@ -465,6 +468,98 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("1 个岗位", sent[0][0])
         self.assertIn("AI工程师", sent[0][1])
+
+    def test_manual_review_preview_and_email_are_separate_from_approval(self):
+        review_job = JobPosting(
+            title="软件开发工程师",
+            company="测试央企",
+            company_type="央企",
+            location="上海",
+            url="https://example.com/jobs/review",
+            source_name="测试来源",
+            score=35,
+            eligibility="符合",
+        )
+        failed_job = JobPosting(
+            title="算法工程师",
+            company="测试国企",
+            company_type="国企",
+            location="北京",
+            url="https://example.com/jobs/failed",
+            source_name="测试来源",
+            score=40,
+            eligibility="符合",
+        )
+        rejected_job = JobPosting(
+            title="行政岗位",
+            company="测试私企",
+            company_type="私企",
+            location="广州",
+            url="https://example.com/jobs/rejected-review",
+            source_name="测试来源",
+            score=20,
+            eligibility="符合",
+        )
+        result = LlmRunResult(
+            model="test-model",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:00:01+00:00",
+            analyses=[
+                {
+                    "status": "needs_review",
+                    "job": review_job.to_dict(),
+                    "review_reason": "毕业届别需要核对",
+                    "semantic_match": {
+                        "score": 35,
+                        "hard_constraint_risks": ["需核对2026届资格"],
+                    },
+                    "critic_review": {
+                        "verdict": "manual_review",
+                        "issues": ["缺少Java技能证据"],
+                    },
+                    "notify_eligible": False,
+                },
+                {
+                    "status": "failed",
+                    "job": failed_job.to_dict(),
+                    "review_reason": "JDUnderstandingAgent调用失败",
+                    "notify_eligible": False,
+                },
+                {
+                    "status": "success",
+                    "job": rejected_job.to_dict(),
+                    "review_reason": "",
+                    "notify_eligible": False,
+                },
+            ],
+        )
+        self.assertEqual(len(manual_review_analyses(result)), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            output = write_llm_review_preview(result, directory)
+            records = json.loads(
+                (output / "manual-review.json").read_text(encoding="utf-8")
+            )
+            digest = (output / "manual-review.html").read_text(encoding="utf-8")
+            database = str(Path(directory) / "review-sent.sqlite3")
+            sent = []
+            first = send_llm_review_notification_email(
+                result,
+                lambda subject, body: sent.append((subject, body)),
+                database,
+            )
+            second = send_llm_review_notification_email(
+                result,
+                lambda subject, body: sent.append((subject, body)),
+                database,
+            )
+        self.assertEqual(len(records), 2)
+        self.assertIn("毕业届别需要核对", digest)
+        self.assertIn("JDUnderstandingAgent调用失败", digest)
+        self.assertNotIn("行政岗位", digest)
+        self.assertEqual(first, 2)
+        self.assertEqual(second, 0)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("2 个岗位需要人工复核", sent[0][0])
 
     def test_llm_notification_database_deduplicates_successful_sends(self):
         approved = JobPosting(
