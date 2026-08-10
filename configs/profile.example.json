@@ -1,6 +1,10 @@
 {
   "graduation": "2026-11",
   "review_graduation_years": [2027],
+  "accepted_recruitment_windows": [
+    "2026秋招",
+    "2027春招"
+  ],
   "education": "硕士",
   "target_roles": [
     "人工智能",

@@ -17,7 +17,7 @@
 - `ARK_API_KEY`
 - `ARK_BASE_URL`（可选，默认火山方舟北京 Base URL）
 - `ARK_MODEL`（可选，默认 `doubao-seed-2-0-lite-260428`）
-- `LLM_PROFILE_JSON`（推荐；脱敏后的画像 JSON，不包含姓名、邮箱、电话或简历原文）
+- `LLM_PROFILE_JSON`（推荐；脱敏后的画像 JSON，不包含姓名、邮箱、电话或简历原文；你的画像应包含 `accepted_recruitment_windows: ["2026秋招", "2027春招"]`）
 
 邮箱应使用应用专用密码。LLM 工作流只有在 Ark API、脱敏画像和以上邮件配置均完整时才发送，否则只生成预览。
 
@@ -31,7 +31,7 @@
 
 ## 5. 调度注意事项
 
-`LLM gated job monitor` 工作流负责定时执行 LLM 门槛分析：默认最多分析 3 个岗位，并以 4 个并行采集 worker 获取来源，生成报告和通知预览；只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和新的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
+`LLM gated job monitor` 工作流负责定时执行 LLM 门槛分析：默认最多分析 10 个岗位，并以 4 个并行采集 worker 获取来源，生成报告和通知预览；只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和新的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
 `reports/llm/latest.json` 同时记录确定性采集的来源统计和来源错误，便于区分“当前没有岗位”和“来源暂时不可访问”。
 
 首次验证或排查来源时，建议手动运行并填写 `source_id=demo_official_jobs`、`include_demo=true`、`max_jobs=1`、`send_email=false`，这样只验证一条演示岗位的 LLM 链路，不必等待全部招聘来源采集。正式定时运行不填写 `source_id`，仍会扫描所有启用的真实来源。
