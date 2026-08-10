@@ -28,6 +28,8 @@ PROMPT_BUNDLE_VERSION = "{}|{}|{}".format(
     CRITIC_PROMPT_VERSION,
 )
 DEFAULT_LLM_NOTIFY_MIN_SCORE = 70
+DEFAULT_LLM_MAX_JOBS = 50
+REVIEW_ELIGIBILITIES = frozenset(("待核对", "需核对"))
 
 
 @dataclass
@@ -101,7 +103,7 @@ class LlmRecruitmentOrchestrator:
         self,
         jobs: Iterable[JobPosting],
         profile: Mapping[str, Any],
-        max_jobs: int = 10,
+        max_jobs: int = DEFAULT_LLM_MAX_JOBS,
         notify_min_score: int = DEFAULT_LLM_NOTIFY_MIN_SCORE,
     ) -> LlmRunResult:
         if max_jobs < 1:
@@ -111,7 +113,13 @@ class LlmRecruitmentOrchestrator:
         started_at = utc_now_iso()
         ordered = sorted(
             list(jobs),
-            key=lambda job: (-job.score, job.company, job.title, job.fingerprint),
+            key=lambda job: (
+                0 if job.eligibility in REVIEW_ELIGIBILITIES else 1,
+                -job.score,
+                job.company,
+                job.title,
+                job.fingerprint,
+            ),
         )
         uncached: List[tuple] = []
         cached_jobs: List[tuple] = []
@@ -366,7 +374,40 @@ class LlmRecruitmentOrchestrator:
             else None
         )
         direct_company = job.company_type in {"央企", "国企"}
-        deterministic_ok = job.eligibility == "符合"
+        review_queue_job = job.eligibility in REVIEW_ELIGIBILITIES
+        eligibility_verdict = (
+            semantic_match.get("eligibility_verdict")
+            if isinstance(semantic_match, Mapping)
+            else None
+        )
+        eligibility_evidence = (
+            semantic_match.get("eligibility_evidence", [])
+            if isinstance(semantic_match, Mapping)
+            else []
+        )
+        eligibility_evidence_ok = (
+            isinstance(eligibility_evidence, list)
+            and any(str(item).strip() for item in eligibility_evidence)
+        )
+        job_text = " ".join(
+            (
+                job.title,
+                job.description,
+                job.education,
+                job.published_at,
+                job.deadline,
+            )
+        ).lower()
+        eligibility_evidence_grounded = (
+            eligibility_evidence_ok
+            and any(str(item).strip().lower() in job_text for item in eligibility_evidence)
+        )
+        review_eligibility_confirmed = (
+            review_queue_job
+            and eligibility_verdict == "confirmed_fit"
+            and eligibility_evidence_grounded
+        )
+        deterministic_ok = job.eligibility == "符合" or review_eligibility_confirmed
         score_ok = (
             isinstance(llm_score, int)
             and not isinstance(llm_score, bool)
@@ -374,6 +415,22 @@ class LlmRecruitmentOrchestrator:
         )
         status_ok = analysis.get("status") == AgentStatus.SUCCESS.value
         critic_ok = critic_verdict == "accept"
+        if (
+            review_queue_job
+            and status_ok
+            and (
+                eligibility_verdict not in {"confirmed_fit", "confirmed_unfit"}
+                or (
+                    eligibility_verdict == "confirmed_fit"
+                    and not eligibility_evidence_grounded
+                )
+            )
+        ):
+            analysis["status"] = AgentStatus.NEEDS_REVIEW.value
+            analysis["review_reason"] = (
+                "LLM未能用岗位原文证据确认毕业届别或招聘批次，仍需人工核对。"
+            )
+            status_ok = False
         if direct_company:
             semantic_verdict = (
                 semantic_match.get("verdict")
@@ -392,15 +449,24 @@ class LlmRecruitmentOrchestrator:
                 and critic_ok
             )
             eligible = status_ok and deterministic_ok and semantic_fit
-            gate_mode = "direct_state_owned_with_fit"
+            gate_mode = (
+                "direct_state_owned_with_fit_and_llm_eligibility"
+                if review_queue_job
+                else "direct_state_owned_with_fit"
+            )
         else:
             eligible = status_ok and deterministic_ok and score_ok and critic_ok
-            gate_mode = "fit_score"
+            gate_mode = "fit_score_with_llm_eligibility" if review_queue_job else "fit_score"
         reasons = []
         if not status_ok:
             reasons.append("分析未成功")
         if not deterministic_ok:
-            reasons.append("确定性资格不是“符合”")
+            if review_queue_job and eligibility_verdict == "confirmed_unfit":
+                reasons.append("LLM确认毕业届别或招聘批次不符合")
+            elif review_queue_job:
+                reasons.append("LLM未确认确定性资格")
+            else:
+                reasons.append("确定性资格不是“符合”")
         if direct_company and not (
             isinstance(semantic_match, Mapping)
             and semantic_match.get("verdict") in {"strong_match", "match"}
@@ -419,6 +485,11 @@ class LlmRecruitmentOrchestrator:
             "company_type": job.company_type,
             "deterministic_eligibility": job.eligibility,
             "deterministic_score": job.score,
+            "eligibility_verdict": eligibility_verdict,
+            "eligibility_evidence": list(eligibility_evidence)
+            if isinstance(eligibility_evidence, list)
+            else [],
+            "eligibility_evidence_grounded": eligibility_evidence_grounded,
             "llm_score": llm_score,
             "llm_minimum_score": notify_min_score,
             "critic_verdict": critic_verdict,
@@ -483,50 +554,21 @@ def deterministic_review_jobs(
     return [
         job
         for job in jobs
-        if job.eligibility in {"待核对", "需核对"}
+        if job.eligibility in REVIEW_ELIGIBILITIES
     ]
-
-
-def _deterministic_review_analysis(job: JobPosting) -> Dict[str, Any]:
-    if job.eligibility == "待核对":
-        reason = "确定性规则缺少明确毕业年份或届别，请核对官方公告。"
-    else:
-        reason = "确定性规则保留该岗位，但毕业年份或招聘批次仍需核对官方公告。"
-    return {
-        "status": "deterministic_review",
-        "job": job.to_dict(),
-        "review_reason": reason,
-        "semantic_match": {
-            "hard_constraint_risks": list(job.score_reasons[:3]),
-        },
-        "critic_review": {},
-        "notify_eligible": False,
-    }
 
 
 def review_notification_analyses(
     result: LlmRunResult,
-    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
 ) -> List[Mapping[str, Any]]:
-    """Combine LLM-review and deterministic-review items for email/preview.
+    """Return only items still unresolved after LLM analysis.
 
-    A job may appear in both queues (for example, an LLM failure on a
-    deterministic ``需核对`` job).  Keep the LLM record, which has the richer
-    diagnostic details, and de-duplicate by job fingerprint.
+    Deterministic review jobs are selected for LLM analysis first.  They are
+    not emailed merely because deterministic rules marked them uncertain; the
+    human-review email is reserved for LLM uncertainty or failure.
     """
 
-    records: List[Mapping[str, Any]] = list(manual_review_analyses(result))
-    seen = {
-        str(analysis.get("job", {}).get("fingerprint", ""))
-        for analysis in records
-        if isinstance(analysis.get("job"), Mapping)
-    }
-    for job in deterministic_review_jobs(deterministic_jobs or []):
-        if job.fingerprint in seen:
-            continue
-        records.append(_deterministic_review_analysis(job))
-        seen.add(job.fingerprint)
-    return records
+    return list(manual_review_analyses(result))
 
 
 def _manual_review_record(analysis: Mapping[str, Any]) -> Dict[str, Any]:
@@ -612,13 +654,12 @@ def render_manual_review_digest(analyses: Iterable[Mapping[str, Any]]) -> str:
 def write_llm_review_preview(
     result: LlmRunResult,
     directory: str,
-    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
 ) -> Path:
     """Write a review-only preview, separate from approved notifications."""
 
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
-    analyses = review_notification_analyses(result, deterministic_jobs)
+    analyses = review_notification_analyses(result)
     records = [_manual_review_record(item) for item in analyses]
     json_path = output / "manual-review.json"
     with json_path.open("w", encoding="utf-8") as handle:
@@ -672,11 +713,10 @@ def send_llm_review_notification_email(
     result: LlmRunResult,
     sender: Callable[[str, str], None],
     database: Optional[str] = None,
-    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
 ) -> int:
     """Send all human-review items with retry-safe fingerprint deduplication."""
 
-    analyses = review_notification_analyses(result, deterministic_jobs)
+    analyses = review_notification_analyses(result)
     jobs = [
         JobPosting.from_mapping(dict(analysis["job"]))
         for analysis in analyses

@@ -13,6 +13,7 @@ from .client import (
     OpenAIResponsesClient,
 )
 from .orchestrator import (
+    DEFAULT_LLM_MAX_JOBS,
     DEFAULT_LLM_NOTIFY_MIN_SCORE,
     LlmRecruitmentOrchestrator,
     LlmRunResult,
@@ -30,6 +31,7 @@ from .orchestrator import (
 
 __all__ = [
     "CriticAgent",
+    "DEFAULT_LLM_MAX_JOBS",
     "DEFAULT_LLM_NOTIFY_MIN_SCORE",
     "DoubaoChatClient",
     "JDUnderstandingAgent",

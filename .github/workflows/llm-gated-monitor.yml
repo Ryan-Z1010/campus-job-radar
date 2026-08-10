@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       send_email:
-        description: "手动运行时是否允许发送通过 LLM 门槛的提醒"
+        description: "手动运行时是否允许发送推荐和 LLM 复核后的人工审核提醒"
         required: true
         default: false
         type: boolean
@@ -21,7 +21,7 @@ on:
       max_jobs:
         description: "本次最多交给 LLM 分析的岗位数"
         required: true
-        default: 10
+        default: 50
         type: number
   schedule:
     - cron: "47 1 * * *"
@@ -71,7 +71,7 @@ jobs:
           ALLOW_EMAIL: ${{ github.event_name == 'schedule' || inputs.send_email }}
           SOURCE_ID: ${{ inputs.source_id }}
           INCLUDE_DEMO: ${{ inputs.include_demo || false }}
-          MAX_JOBS: ${{ inputs.max_jobs || 10 }}
+          MAX_JOBS: ${{ inputs.max_jobs || 50 }}
         run: |
           set -euo pipefail
           profile_path="configs/profile.example.json"
@@ -83,7 +83,7 @@ jobs:
           args=(
             llm-analyze
             --profile "$profile_path"
-            --max-jobs "${MAX_JOBS:-10}"
+            --max-jobs "${MAX_JOBS:-50}"
             --collection-workers 4
             --notify-min-score 70
             --output reports/llm/latest.json

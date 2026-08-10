@@ -67,8 +67,8 @@ def jd_response():
     }
 
 
-def match_response(score=82):
-    return {
+def match_response(score=82, eligibility_verdict=None, eligibility_evidence=None):
+    response = {
         "score": score,
         "verdict": "match" if score >= 70 else "possible_match",
         "matched_requirements": [
@@ -80,6 +80,10 @@ def match_response(score=82):
         "evidence_quality": "medium",
         "confidence": 0.8,
     }
+    if eligibility_verdict is not None:
+        response["eligibility_verdict"] = eligibility_verdict
+        response["eligibility_evidence"] = eligibility_evidence or []
+    return response
 
 
 def critic_response(verdict="accept"):
@@ -362,6 +366,7 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_orchestrator_accepts_grounded_result(self):
+        self.job.eligibility = "符合"
         client = ScriptedClient([jd_response(), match_response(), critic_response()])
         result = LlmRecruitmentOrchestrator(client).run(
             [self.job], self.profile, max_jobs=1
@@ -374,8 +379,8 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(analysis["critic_review"]["verdict"], "accept")
         sent_profile = client.calls[1]["input_data"]["sanitized_profile"]
         self.assertNotIn("email", sent_profile)
-        self.assertFalse(analysis["notify_eligible"])
-        self.assertEqual(result.notify_eligible, 0)
+        self.assertTrue(analysis["notify_eligible"])
+        self.assertEqual(result.notify_eligible, 1)
 
     def test_llm_report_preserves_deterministic_source_diagnostics(self):
         result = LlmRunResult(
@@ -566,8 +571,8 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("2 个岗位需要人工复核", sent[0][0])
 
-    def test_deterministic_review_queue_is_sent_and_deduplicated(self):
-        deterministic_job = JobPosting(
+    def test_deterministic_review_queue_is_prioritized_for_llm(self):
+        review_job = JobPosting(
             title="数据开发工程师",
             company="测试国企",
             company_type="国企",
@@ -578,40 +583,71 @@ class LlmAgentTests(unittest.TestCase):
             score=55,
             eligibility="需核对",
         )
-        result = LlmRunResult(
-            model="test-model",
-            started_at="2026-01-01T00:00:00+00:00",
-            finished_at="2026-01-01T00:00:01+00:00",
+        eligible_job = JobPosting(
+            title="软件开发工程师",
+            company="另一家国企",
+            company_type="国企",
+            location="上海",
+            url="https://example.com/jobs/eligible",
+            source_name="测试来源",
+            description="开发软件系统，要求Python。",
+            score=99,
+            eligibility="符合",
         )
-        self.assertEqual(len(review_notification_analyses(result, [deterministic_job])), 1)
+        client = ScriptedClient([jd_response(), match_response(), critic_response()])
+        result = LlmRecruitmentOrchestrator(client).run(
+            [eligible_job, review_job], self.profile, max_jobs=1
+        )
+        self.assertEqual(result.selected, 1)
+        self.assertEqual(result.analyses[0]["job"]["title"], "数据开发工程师")
+
+    def test_review_job_confirmed_by_llm_can_enter_notification_gate(self):
+        self.job.eligibility = "需核对"
+        client = ScriptedClient(
+            [
+                jd_response(),
+                match_response(
+                    82,
+                    eligibility_verdict="confirmed_fit",
+                    eligibility_evidence=["2027届"],
+                ),
+                critic_response(),
+            ]
+        )
+        result = LlmRecruitmentOrchestrator(client).run(
+            [self.job], self.profile, max_jobs=1, notify_min_score=70
+        )
+        self.assertTrue(result.analyses[0]["notify_eligible"])
+        self.assertEqual(result.needs_review, 0)
+        self.assertEqual(review_notification_analyses(result), [])
+
+    def test_review_job_still_uncertain_is_the_only_manual_email_candidate(self):
+        self.job.eligibility = "需核对"
+        client = ScriptedClient(
+            [
+                jd_response(),
+                match_response(
+                    82,
+                    eligibility_verdict="still_uncertain",
+                ),
+                critic_response(),
+            ]
+        )
+        result = LlmRecruitmentOrchestrator(client).run(
+            [self.job], self.profile, max_jobs=1
+        )
+        self.assertEqual(result.needs_review, 1)
+        analyses = review_notification_analyses(result)
+        self.assertEqual(len(analyses), 1)
         with tempfile.TemporaryDirectory() as directory:
-            output = write_llm_review_preview(
-                result, directory, [deterministic_job]
-            )
-            records = json.loads(
-                (output / "manual-review.json").read_text(encoding="utf-8")
-            )
-            database = str(Path(directory) / "review-sent.sqlite3")
             sent = []
-            first = send_llm_review_notification_email(
+            count = send_llm_review_notification_email(
                 result,
                 lambda subject, body: sent.append((subject, body)),
-                database,
-                [deterministic_job],
+                str(Path(directory) / "review-sent.sqlite3"),
             )
-            second = send_llm_review_notification_email(
-                result,
-                lambda subject, body: sent.append((subject, body)),
-                database,
-                [deterministic_job],
-            )
-        self.assertEqual(len(records), 1)
-        self.assertIn("毕业年份或招聘批次仍需核对", records[0]["reason"])
-        self.assertEqual(first, 1)
-        self.assertEqual(second, 0)
-        self.assertEqual(len(sent), 1)
-        self.assertIn("1 个岗位需要人工复核", sent[0][0])
-        self.assertIn("数据开发工程师", sent[0][1])
+        self.assertEqual(count, 1)
+        self.assertIn("AI智能体开发工程师", sent[0][1])
 
     def test_llm_notification_database_deduplicates_successful_sends(self):
         approved = JobPosting(
@@ -682,6 +718,7 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(sent, 1)
 
     def test_critic_can_request_exactly_one_revision(self):
+        self.job.eligibility = "符合"
         client = ScriptedClient(
             [
                 jd_response(),

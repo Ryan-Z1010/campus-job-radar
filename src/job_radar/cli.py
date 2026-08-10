@@ -177,8 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
     llm_analyze.add_argument(
         "--max-jobs",
         type=int,
-        default=10,
-        help="本次最多分析的岗位数，默认 10",
+        default=50,
+        help="本次最多分析的岗位数，默认 50；优先分析待核对岗位",
     )
     llm_analyze.add_argument(
         "--notify-min-score",
@@ -267,6 +267,7 @@ def main(argv=None) -> int:
                 DoubaoChatClient,
                 LlmAnalysisCache,
                 LlmRecruitmentOrchestrator,
+                deterministic_review_jobs,
                 review_notification_analyses,
                 send_llm_notification_email,
                 send_llm_review_notification_email,
@@ -343,6 +344,20 @@ def main(argv=None) -> int:
                 "ready": deterministic.ready,
                 "review_required": deterministic.review_required,
             }
+            review_queue = deterministic_review_jobs(deterministic.jobs)
+            selected_review = sum(
+                1
+                for analysis in result.analyses
+                if analysis.get("job", {}).get("eligibility")
+                in {"待核对", "需核对"}
+            )
+            result.deterministic_counts.update(
+                {
+                    "llm_review_queue": len(review_queue),
+                    "llm_review_selected": selected_review,
+                    "llm_review_pending": max(0, len(review_queue) - selected_review),
+                }
+            )
             collection_report_dir = Path(args.output).parent / "collected-jobs"
             write_reports(deterministic.jobs, str(collection_report_dir))
             print("确定性采集明细: {}".format(collection_report_dir))
@@ -351,6 +366,13 @@ def main(argv=None) -> int:
                 "LLM选中 {0.selected} | 完成 {0.analyzed} | "
                 "缓存命中 {0.cache_hits} | 需人工复核 {0.needs_review} | "
                 "失败 {0.failed} | 可提醒 {0.notify_eligible}".format(result)
+            )
+            print(
+                "需核对队列 {0} | 本次送入 LLM {1} | 尚未分析 {2}".format(
+                    len(review_queue),
+                    selected_review,
+                    max(0, len(review_queue) - selected_review),
+                )
             )
             print("LLM分析报告: {}".format(report_path))
             if args.notification_preview_dir:
@@ -365,12 +387,11 @@ def main(argv=None) -> int:
                 review_preview_path = write_llm_review_preview(
                     result,
                     str(Path(args.notification_preview_dir) / "manual-review"),
-                    deterministic.jobs,
                 )
                 print(
                     "人工复核预览: {} | 待复核 {} 个岗位".format(
                         review_preview_path,
-                        len(review_notification_analyses(result, deterministic.jobs)),
+                        len(review_notification_analyses(result)),
                     )
                 )
             if args.send_email:
@@ -385,11 +406,10 @@ def main(argv=None) -> int:
                     result,
                     send_email,
                     args.review_notification_database,
-                    deterministic.jobs,
                 )
                 if review_sent_count:
                     print("人工复核邮件已发送: {} 个岗位".format(review_sent_count))
-                elif review_notification_analyses(result, deterministic.jobs):
+                elif review_notification_analyses(result):
                     print("人工复核岗位此前已通知或没有新项，复核邮件未发送。")
             for error in deterministic.source_errors:
                 print("来源错误: {}".format(error), file=sys.stderr)
