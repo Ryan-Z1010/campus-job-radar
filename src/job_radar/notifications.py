@@ -3,10 +3,18 @@ from __future__ import annotations
 import os
 import smtplib
 from email.message import EmailMessage
+from typing import Optional
 
 
-def send_email(subject: str, html_body: str) -> None:
-    recipient = os.environ.get("ALERT_EMAIL", "")
+def send_email(subject: str, html_body: str, recipient: Optional[str] = None) -> None:
+    """Send an email using the shared SMTP sender.
+
+    ``recipient`` is optional for backwards compatibility.  Multi-user runs
+    pass each user's own destination explicitly while keeping SMTP credentials
+    in the process environment.
+    """
+
+    recipient = recipient or os.environ.get("ALERT_EMAIL", "")
     host = os.environ.get("SMTP_HOST", "")
     username = os.environ.get("SMTP_USERNAME", "")
     password = os.environ.get("SMTP_PASSWORD", "")

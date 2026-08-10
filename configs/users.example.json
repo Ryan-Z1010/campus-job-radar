@@ -1,0 +1,17 @@
+{
+  "users": [
+    {
+      "id": "student-a",
+      "profile": "configs/profile.local.student-a.json",
+      "email": "student-a@example.com",
+      "database": "data/users/student-a/job_radar.db",
+      "report_dir": "reports/users/student-a",
+      "trace_file": "reports/users/student-a/agent-trace.json"
+    },
+    {
+      "id": "student-b",
+      "profile": "configs/profile.local.student-b.json",
+      "email": "student-b@example.com"
+    }
+  ]
+}

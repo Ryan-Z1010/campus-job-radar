@@ -12,6 +12,7 @@ from .audit import audit_sources
 from .config import ConfigError, load_dotenv, load_profile, load_sources
 from .notifications import send_email
 from .pipeline import run_pipeline
+from .multi_user import MultiUserOrchestrator, load_users, write_multi_user_trace
 
 
 def _read_doubao_key_file(path: str) -> str:
@@ -87,6 +88,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="正常入库并生成报告，但不发送邮件",
     )
     agent_monitor.add_argument(
+        "--include-demo", action="store_true", help="显式启用演示岗位"
+    )
+
+    multi_monitor = subparsers.add_parser(
+        "multi-monitor",
+        help="共享一次公司池采集，再为多个用户分别评分、入库、生成报告并通知",
+    )
+    multi_monitor.add_argument("--users", default="configs/users.local.json")
+    multi_monitor.add_argument("--sources", default="configs/sources.json")
+    multi_monitor.add_argument("--env-file", default=".env")
+    multi_monitor.add_argument(
+        "--trace-file",
+        default="reports/multi/users-latest.json",
+        help="保存汇总决策轨迹；用户报告仍写入各自 report_dir",
+    )
+    multi_monitor.add_argument(
+        "--source", action="append", help="只运行指定来源 ID，可重复传入"
+    )
+    multi_monitor.add_argument(
+        "--collection-workers",
+        type=int,
+        default=4,
+        help="共享公司池采集并行数；默认 4",
+    )
+    multi_monitor.add_argument(
+        "--dry-run", action="store_true", help="生成每个用户的报告但不发送邮件"
+    )
+    multi_monitor.add_argument(
         "--include-demo", action="store_true", help="显式启用演示岗位"
     )
 
@@ -198,6 +227,35 @@ def main(argv=None) -> int:
             )
             print("测试邮件已发送。")
             return 0
+        if args.command == "multi-monitor":
+            load_dotenv(args.env_file)
+            users = load_users(args.users)
+            result = MultiUserOrchestrator().run(
+                users=users,
+                sources=load_sources(args.sources),
+                include_demo=args.include_demo,
+                source_ids=args.source,
+                collection_workers=args.collection_workers,
+                dry_run=args.dry_run,
+            )
+            trace_path = write_multi_user_trace(result, args.trace_file)
+            print(
+                "共享采集来源 {0.source_total} | 共享采集岗位 {0.collected} | "
+                "用户数 {1}".format(result, len(result.users))
+            )
+            for user in result.users:
+                print(
+                    "用户 {0.user_id} | 有效 {0.valid} | 新增 {0.inserted} | "
+                    "达到提醒阈值 {0.alerted} | 邮件 {1}".format(
+                        user, "已发送" if user.email_sent else "未发送"
+                    )
+                )
+                for error in user.pipeline_errors:
+                    print("用户流程错误 [{}]: {}".format(user.user_id, error), file=sys.stderr)
+            print("多人决策轨迹: {}".format(trace_path))
+            for error in result.source_errors:
+                print("共享来源错误: {}".format(error), file=sys.stderr)
+            return 2 if any(user.status.value == "failed" for user in result.users) else 0
         if args.command == "llm-analyze":
             from .llm import (
                 DoubaoChatClient,

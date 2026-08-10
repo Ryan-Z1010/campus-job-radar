@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
 
 from ..models import JobPosting, utc_now_iso
 from ..notifications import send_email
@@ -36,6 +36,7 @@ class NotificationAgent:
         profile: Dict[str, Any],
         report_dir: str,
         dry_run: bool = False,
+        recipient: Optional[str] = None,
     ) -> AgentResult:
         task_id = "notification-{}".format(uuid.uuid4().hex[:8])
         started_at = utc_now_iso()
@@ -72,6 +73,7 @@ class NotificationAgent:
                 send_email(
                     "CampusJobRadar：发现 {} 个新岗位".format(len(alert_jobs)),
                     render_digest(alert_jobs),
+                    recipient=recipient,
                 )
                 email_sent = True
         except Exception as exc:

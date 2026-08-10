@@ -127,6 +127,29 @@ python -m job_radar agent-run \
 
 详细设计、安全边界和两种运行方式见 [架构说明](docs/architecture.md#多-agent-架构)。
 
+## 多人共享公司池
+
+当前仓库支持多人本地运行：公司来源只采集一次，随后为每个用户分别执行画像评分、SQLite 去重、报告生成和邮件通知。每个用户的 `profile`、收件邮箱、数据库和报告目录彼此隔离；公共公司池仍统一使用 `configs/sources.json`。
+
+先复制多人配置模板：
+
+```bash
+cp configs/users.example.json configs/users.local.json
+```
+
+把每个用户的简历信息整理到自己的 `profile.local.*.json`（不要提交原始简历、照片或联系方式），然后运行：
+
+```bash
+python -m job_radar multi-monitor \
+  --users configs/users.local.json \
+  --sources configs/sources.json \
+  --dry-run
+```
+
+确认每个用户的 `reports/users/<id>/digest.html` 后，移除 `--dry-run` 才会发送邮件。SMTP 用户名和密码由运行者的 `.env` 提供，`users.local.json` 中的 `email` 只指定每位用户的收件地址。多人配置和每人的画像已加入 Git 忽略规则；不要把真实简历、邮箱或 API Key 写入公共仓库。
+
+当前 `multi-monitor` 是本地多人版，适合你和同学共享一份公司池。后续做在线服务时，再把 `users.local.json` 替换为登录、数据库、简历上传和用户级权限；岗位采集仍保持全局一次，匹配和通知按用户展开。
+
 ## 大模型多智能体分析（可选）
 
 `llm-analyze` 在确定性采集和硬性资格判断之后，依次运行
