@@ -12,6 +12,7 @@ from .audit import audit_sources
 from .config import ConfigError, load_dotenv, load_profile, load_sources
 from .notifications import send_email
 from .pipeline import run_pipeline
+from .reporting import write_reports
 from .multi_user import MultiUserOrchestrator, load_users, write_multi_user_trace
 
 
@@ -342,6 +343,9 @@ def main(argv=None) -> int:
                 "ready": deterministic.ready,
                 "review_required": deterministic.review_required,
             }
+            collection_report_dir = Path(args.output).parent / "collected-jobs"
+            write_reports(deterministic.jobs, str(collection_report_dir))
+            print("确定性采集明细: {}".format(collection_report_dir))
             report_path = write_llm_report(result, args.output)
             print(
                 "LLM选中 {0.selected} | 完成 {0.analyzed} | "
