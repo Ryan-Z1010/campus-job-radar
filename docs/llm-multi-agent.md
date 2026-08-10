@@ -87,7 +87,7 @@ python -m job_radar llm-analyze \
 `data/llm_analysis.sqlite3`。需要重新评测所有岗位时可临时加 `--no-cache`；平时不建议关闭
 缓存。`--notification-preview-dir` 会生成通过门槛岗位的 HTML/JSON/CSV 预览，并在其 `manual-review/` 子目录生成需要人工复核的岗位、原因和官方链接；预览本身不发送邮件。
 只有同时显式传入 `--send-email` 和预览目录，程序才会把通过门槛岗位交给 SMTP；没有通过岗位时不会发送。若 LLM 对“待核对/需核对”岗位仍返回 `needs_review` 或分析失败，同一次运行会额外发送一封独立的“待人工复核”邮件；确定性队列不会在未经 LLM 分析时直接发给你，这封邮件明确说明不代表推荐直接投递，并附官方岗位链接供人工核对。
-推荐通知使用 `data/llm_notification.sqlite3`，人工复核通知使用独立的 `data/llm_review_notification.sqlite3`，两者分别按岗位指纹去重；SMTP 失败不会记录，后续运行会重试。
+推荐通知使用 `data/llm_notification.sqlite3`，人工复核通知使用独立的 `data/llm_review_notification_v2.sqlite3`，两者分别按岗位指纹去重；SMTP 失败不会记录，后续运行会重试。
 `--model` 可以覆盖 .env 中的 ARK_MODEL；如果使用推理接入点，也可以填写 ep-...。默认模型为 doubao-seed-2-0-lite-260428。
 
 ## 进入主链路前的验收条件

@@ -51,7 +51,7 @@ jobs:
           path: |
             data/llm_analysis.sqlite3
             data/llm_notification.sqlite3
-            data/llm_review_notification.sqlite3
+            data/llm_review_notification_v2.sqlite3
           key: llm-analysis-db-${{ github.run_id }}
           restore-keys: |
             llm-analysis-db-
@@ -89,7 +89,7 @@ jobs:
             --output reports/llm/latest.json
             --cache-database data/llm_analysis.sqlite3
             --notification-database data/llm_notification.sqlite3
-            --review-notification-database data/llm_review_notification.sqlite3
+            --review-notification-database data/llm_review_notification_v2.sqlite3
             --notification-preview-dir reports/llm/notification-preview
           )
           if [ "${INCLUDE_DEMO:-false}" = "true" ]; then
@@ -114,7 +114,7 @@ jobs:
           path: |
             data/llm_analysis.sqlite3
             data/llm_notification.sqlite3
-            data/llm_review_notification.sqlite3
+            data/llm_review_notification_v2.sqlite3
           key: llm-analysis-db-${{ github.run_id }}
 
       - name: Upload LLM reports

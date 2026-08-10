@@ -161,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_analyze.add_argument(
         "--review-notification-database",
-        default="data/llm_review_notification.sqlite3",
+        default="data/llm_review_notification_v2.sqlite3",
         help="记录已成功发送的人工复核岗位指纹；与推荐通知独立",
     )
     llm_analyze.add_argument(

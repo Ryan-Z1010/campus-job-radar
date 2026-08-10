@@ -176,7 +176,7 @@ python -m job_radar llm-analyze \
 分析报告会额外计算可投递门槛：央企/国企需硬性资格符合、岗位方向适配且 Critic 判定 accept；外企/私企还需达到默认 70 分。城市不参与加分；“待核对/需核对”岗位会优先送入 LLM，只有 LLM 仍无法确认时才进入人工复核邮件。
 `--notification-preview-dir` 会生成两类预览：通过门槛岗位的 HTML/JSON/CSV，以及 `manual-review/` 下需要人工复核的岗位和原因；预览不会发送邮件。
 只有同时显式指定 `--send-email` 和预览目录，才会把通过门槛的岗位交给 SMTP；没有通过岗位时不会发送。
-如果 LLM 对“待核对/需核对”岗位仍返回 `needs_review` 或分析失败，同一次运行还会单独发送“待人工复核”邮件；确定性队列不会在未经 LLM 分析时直接发给你。推荐通知和人工复核通知分别使用 `data/llm_notification.sqlite3` 与 `data/llm_review_notification.sqlite3` 去重；发送失败不会写入，后续运行会重试。
+如果 LLM 对“待核对/需核对”岗位仍返回 `needs_review` 或分析失败，同一次运行还会单独发送“待人工复核”邮件；确定性队列不会在未经 LLM 分析时直接发给你。推荐通知和人工复核通知分别使用 `data/llm_notification.sqlite3` 与 `data/llm_review_notification_v2.sqlite3` 去重；发送失败不会写入，后续运行会重试。
 实现范围、隐私字段和下一阶段验收条件见
 [大模型多智能体说明](docs/llm-multi-agent.md)。
 

@@ -27,7 +27,7 @@
 
 ## 4. 数据持久化
 
-工作流用 GitHub Actions cache 保存 `data/llm_analysis.sqlite3` 分析缓存、`data/llm_notification.sqlite3` 推荐通知指纹和 `data/llm_review_notification.sqlite3` 人工复核通知指纹，并上传当次岗位报告和通知预览 artifact。通知指纹只有在 SMTP 发送成功后才写入；Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
+工作流用 GitHub Actions cache 保存 `data/llm_analysis.sqlite3` 分析缓存、`data/llm_notification.sqlite3` 推荐通知指纹和 `data/llm_review_notification_v2.sqlite3` 人工复核通知指纹，并上传当次岗位报告和通知预览 artifact。人工复核去重库使用 v2 是为了隔离旧版“确定性队列直接通知”的指纹；通知指纹只有在 SMTP 发送成功后才写入。Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
 
 ## 5. 调度注意事项
 
