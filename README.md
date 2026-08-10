@@ -174,9 +174,9 @@ python -m job_radar llm-analyze \
 `data/llm_analysis.sqlite3`。缓存键包含岗位内容、脱敏画像、模型和提示词版本；岗位或画像
 发生变化时会自动重新分析。调用豆包 Chat API 会消耗火山方舟额度，现有邮件 Secrets 不会被复用。
 分析报告会额外计算可投递门槛：央企/国企需硬性资格符合、岗位方向适配且 Critic 判定 accept；外企/私企还需达到默认 70 分。城市不参与加分，不满足条件时只进入人工复核，不会触发邮件。
-`--notification-preview-dir` 只生成通过门槛岗位的 HTML/JSON/CSV 预览，不会发送邮件。
+`--notification-preview-dir` 会生成两类预览：通过门槛岗位的 HTML/JSON/CSV，以及 `manual-review/` 下需要人工复核的岗位和原因；预览不会发送邮件。
 只有同时显式指定 `--send-email` 和预览目录，才会把通过门槛的岗位交给 SMTP；没有通过岗位时不会发送。
-发送成功的岗位指纹记录在 `data/llm_notification.sqlite3`，避免定时任务重复提醒；发送失败不会写入，后续运行会重试。
+如果有新的人工复核项，同一次运行还会单独发送“待人工复核”邮件；它不会被当作岗位推荐。推荐通知和人工复核通知分别使用 `data/llm_notification.sqlite3` 与 `data/llm_review_notification.sqlite3` 去重；发送失败不会写入，后续运行会重试。
 实现范围、隐私字段和下一阶段验收条件见
 [大模型多智能体说明](docs/llm-multi-agent.md)。
 
@@ -258,7 +258,7 @@ python -m job_radar audit --sources configs/sources.json
 - `ci.yml`：Pull Request 和 `main` 分支推送时执行测试与确定性 Agent 烟测；
 - `daily-monitor.yml`：手动运行的确定性 Agent/legacy 回退入口。
 
-- `llm-gated-monitor.yml`：按 UTC 计划运行 LLM 门槛分析，默认最多分析 3 个岗位；存在完整 Ark、SMTP 和画像 Secrets 时才发送通过门槛的岗位，否则只生成预览，并上传报告 artifact。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
+- `llm-gated-monitor.yml`：按 UTC 计划运行 LLM 门槛分析，默认最多分析 3 个岗位；存在完整 Ark、SMTP 和画像 Secrets 时发送通过门槛岗位及新的人工复核摘要，否则只生成预览，并上传报告 artifact。详细配置见 [GitHub 部署指南](docs/github-deployment.md)。
 
 ## 项目结构
 

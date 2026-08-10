@@ -146,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     llm_analyze.add_argument(
         "--send-email",
         action="store_true",
-        help="显式发送通过 LLM 门槛的岗位；必须同时指定 --notification-preview-dir",
+        help="显式发送通过岗位及新的人工复核摘要；必须同时指定 --notification-preview-dir",
     )
     llm_analyze.add_argument(
         "--cache-database",
@@ -157,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--notification-database",
         default="data/llm_notification.sqlite3",
         help="记录已成功发送的 LLM 岗位指纹；只在 --send-email 时写入",
+    )
+    llm_analyze.add_argument(
+        "--review-notification-database",
+        default="data/llm_review_notification.sqlite3",
+        help="记录已成功发送的人工复核岗位指纹；与推荐通知独立",
     )
     llm_analyze.add_argument(
         "--no-cache",
@@ -261,8 +266,11 @@ def main(argv=None) -> int:
                 DoubaoChatClient,
                 LlmAnalysisCache,
                 LlmRecruitmentOrchestrator,
+                manual_review_analyses,
                 send_llm_notification_email,
+                send_llm_review_notification_email,
                 write_llm_notification_preview,
+                write_llm_review_preview,
                 write_llm_report,
             )
 
@@ -350,6 +358,15 @@ def main(argv=None) -> int:
                         preview_path, result.notify_eligible
                     )
                 )
+                review_preview_path = write_llm_review_preview(
+                    result,
+                    str(Path(args.notification_preview_dir) / "manual-review"),
+                )
+                print(
+                    "人工复核预览: {} | 待复核 {} 个岗位".format(
+                        review_preview_path, len(manual_review_analyses(result))
+                    )
+                )
             if args.send_email:
                 sent_count = send_llm_notification_email(
                     result, send_email, args.notification_database
@@ -358,6 +375,13 @@ def main(argv=None) -> int:
                     print("LLM邮件已发送: {} 个岗位".format(sent_count))
                 else:
                     print("没有通过 LLM 门槛的岗位，邮件未发送。")
+                review_sent_count = send_llm_review_notification_email(
+                    result, send_email, args.review_notification_database
+                )
+                if review_sent_count:
+                    print("人工复核邮件已发送: {} 个岗位".format(review_sent_count))
+                elif manual_review_analyses(result):
+                    print("人工复核岗位此前已通知或没有新项，复核邮件未发送。")
             for error in deterministic.source_errors:
                 print("来源错误: {}".format(error), file=sys.stderr)
             return 2 if result.failed and result.analyzed == 0 else 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -451,6 +452,123 @@ def notification_jobs(result: LlmRunResult) -> List[JobPosting]:
     return jobs
 
 
+def manual_review_analyses(result: LlmRunResult) -> List[Mapping[str, Any]]:
+    """Return analyses that need a human check or a retry.
+
+    A successful but low-fit analysis is intentionally not included: it is a
+    normal non-match.  Only an LLM ``needs_review`` or ``failed`` status is
+    actionable for the human-review digest.
+    """
+
+    return [
+        analysis
+        for analysis in result.analyses
+        if analysis.get("status")
+        in {AgentStatus.NEEDS_REVIEW.value, AgentStatus.FAILED.value}
+        and isinstance(analysis.get("job"), Mapping)
+    ]
+
+
+def _manual_review_record(analysis: Mapping[str, Any]) -> Dict[str, Any]:
+    job = analysis.get("job", {})
+    semantic = analysis.get("semantic_match", {})
+    critic = analysis.get("critic_review", {})
+    return {
+        "fingerprint": str(job.get("fingerprint", "")),
+        "company": str(job.get("company", "")),
+        "title": str(job.get("title", "")),
+        "location": str(job.get("location", "")),
+        "company_type": str(job.get("company_type", "")),
+        "url": str(job.get("url", "")),
+        "deterministic_score": job.get("score", 0),
+        "deterministic_eligibility": str(job.get("eligibility", "")),
+        "status": str(analysis.get("status", "")),
+        "reason": str(analysis.get("review_reason", "")),
+        "llm_score": (
+            semantic.get("score")
+            if isinstance(semantic, Mapping)
+            else None
+        ),
+        "critic_verdict": (
+            critic.get("verdict") if isinstance(critic, Mapping) else None
+        ),
+        "critic_issues": (
+            list(critic.get("issues", []))[:5]
+            if isinstance(critic, Mapping)
+            and isinstance(critic.get("issues", []), list)
+            else []
+        ),
+        "hard_constraint_risks": (
+            list(semantic.get("hard_constraint_risks", []))[:5]
+            if isinstance(semantic, Mapping)
+            and isinstance(semantic.get("hard_constraint_risks", []), list)
+            else []
+        ),
+    }
+
+
+def render_manual_review_digest(analyses: Iterable[Mapping[str, Any]]) -> str:
+    """Render a clearly non-approval digest for human follow-up."""
+
+    records = [_manual_review_record(analysis) for analysis in analyses]
+    items = []
+    for record in records:
+        reason = record["reason"] or "自动分析未能给出可直接通知的结论。"
+        issues = record["critic_issues"] + record["hard_constraint_risks"]
+        details = "；".join(str(item) for item in issues if item)
+        if details:
+            reason = "{} {}".format(reason, details)
+        url = record["url"]
+        link = (
+            '<a href="{}">查看官方岗位</a>'.format(escape(url, quote=True))
+            if url.startswith(("http://", "https://"))
+            else "官方链接不可用"
+        )
+        items.append(
+            "<li><strong>{company} · {title}</strong> · {location} · {company_type}"
+            "<br>确定性评分：{score}；LLM评分：{llm_score}；状态：{status}"
+            "<br>复核原因：{reason}<br>{link}</li>".format(
+                company=escape(record["company"]),
+                title=escape(record["title"]),
+                location=escape(record["location"]),
+                company_type=escape(record["company_type"]),
+                score=escape(str(record["deterministic_score"])),
+                llm_score=escape(str(record["llm_score"] or "未完成")),
+                status=escape(record["status"]),
+                reason=escape(reason),
+                link=link,
+            )
+        )
+    return (
+        "<html><body>"
+        "<h1>CampusJobRadar：待人工复核岗位</h1>"
+        "<p>以下岗位未通过自动通知门槛，不代表系统建议直接投递。请先核对官方公告、"
+        "毕业届别和岗位要求，再决定是否申请。</p>"
+        "<ul>{}</ul>"
+        "</body></html>".format("".join(items))
+    )
+
+
+def write_llm_review_preview(
+    result: LlmRunResult, directory: str
+) -> Path:
+    """Write a review-only preview, separate from approved notifications."""
+
+    output = Path(directory)
+    output.mkdir(parents=True, exist_ok=True)
+    records = [_manual_review_record(item) for item in manual_review_analyses(result)]
+    json_path = output / "manual-review.json"
+    with json_path.open("w", encoding="utf-8") as handle:
+        json.dump(records, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    html_path = output / "manual-review.html"
+    html_path.write_text(
+        render_manual_review_digest(manual_review_analyses(result)),
+        encoding="utf-8",
+    )
+    return output
+
+
 def write_llm_notification_preview(
     result: LlmRunResult, directory: str
 ) -> Path:
@@ -478,6 +596,44 @@ def send_llm_notification_email(
         sender(
             "CampusJobRadar：LLM审核通过 {} 个岗位".format(len(jobs)),
             render_digest(jobs),
+        )
+        if store is not None:
+            store.upsert(jobs)
+        return len(jobs)
+    finally:
+        if store is not None:
+            store.close()
+
+
+def send_llm_review_notification_email(
+    result: LlmRunResult,
+    sender: Callable[[str, str], None],
+    database: Optional[str] = None,
+) -> int:
+    """Send human-review items with a separate retry-safe dedupe database."""
+
+    analyses = manual_review_analyses(result)
+    jobs = [
+        JobPosting.from_mapping(dict(analysis["job"]))
+        for analysis in analyses
+        if isinstance(analysis.get("job"), Mapping)
+    ]
+    store = JobStore(database) if database else None
+    try:
+        if store is not None:
+            jobs = store.new_jobs(jobs)
+        if not jobs:
+            return 0
+        fingerprints = {job.fingerprint for job in jobs}
+        selected = [
+            analysis
+            for analysis in analyses
+            if str(analysis.get("job", {}).get("fingerprint", ""))
+            in fingerprints
+        ]
+        sender(
+            "CampusJobRadar：有 {} 个岗位需要人工复核".format(len(jobs)),
+            render_manual_review_digest(selected),
         )
         if store is not None:
             store.upsert(jobs)
