@@ -10,8 +10,11 @@ venv/
 # Personal and runtime data
 .env
 configs/profile.local.json
+configs/profile.local.*.json
+configs/users.local.json
 data/job_radar.db
 data/*.sqlite*
+data/users/
 reports/
 
 # Existing private workspace artifacts (resume, photo, trackers)
