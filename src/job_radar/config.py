@@ -77,7 +77,34 @@ def load_sources(path: str) -> List[Dict[str, Any]]:
     for include in include_paths:
         include_path = config_dir / include
         included = load_json(str(include_path))
-        included_sources = included.get("sources")
+        included_sources = included.get("sources", [])
+        if included.get("company_groups"):
+            defaults = included.get("source_defaults", {})
+            if not isinstance(defaults, dict):
+                raise ConfigError("来源配置 source_defaults 必须是对象: {}".format(include_path))
+            expanded = []
+            for group in included["company_groups"]:
+                if not isinstance(group, dict):
+                    raise ConfigError("来源配置 company_groups 的每项必须是对象: {}".format(include_path))
+                names = group.get("names")
+                prefix = group.get("id_prefix")
+                if not isinstance(names, list) or not all(isinstance(name, str) and name.strip() for name in names):
+                    raise ConfigError("来源配置 company_groups.names 必须是非空字符串数组: {}".format(include_path))
+                if not isinstance(prefix, str) or not prefix.strip():
+                    raise ConfigError("来源配置 company_groups.id_prefix 必须是非空字符串: {}".format(include_path))
+                overrides = {key: value for key, value in group.items() if key not in {"names", "id_prefix"}}
+                for index, company in enumerate(names, start=1):
+                    source = dict(defaults)
+                    source.update(overrides)
+                    source.update(
+                        {
+                            "id": "{}_{}".format(prefix, index),
+                            "name": "{}2027校招监控".format(company),
+                            "company": company,
+                        }
+                    )
+                    expanded.append(source)
+            included_sources = list(included_sources) + expanded
         if not isinstance(included_sources, list):
             raise ConfigError("来源配置 include 文件必须包含 sources 数组: {}".format(include_path))
         sources.extend(included_sources)

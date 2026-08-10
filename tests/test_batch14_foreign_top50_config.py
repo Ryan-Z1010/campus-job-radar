@@ -37,8 +37,8 @@ class Batch14ForeignTop50ConfigTests(unittest.TestCase):
     def test_loader_includes_active_window_markers(self):
         loaded = load_sources(str(self.BASE))
         by_id = {item["id"]: item for item in loaded}
-        self.assertEqual(len(by_id), 647)
-        self.assertEqual(sum(item["type"] == "campaign_watch" for item in loaded), 586)
+        self.assertEqual(len(by_id), 1014)
+        self.assertEqual(sum(item["type"] == "campaign_watch" for item in loaded), 953)
         for item in self.batch:
             source = by_id[item["id"]]
             self.assertIn("2026秋招", source["target_keywords"], item["id"])
