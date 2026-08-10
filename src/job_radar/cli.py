@@ -267,7 +267,7 @@ def main(argv=None) -> int:
                 DoubaoChatClient,
                 LlmAnalysisCache,
                 LlmRecruitmentOrchestrator,
-                manual_review_analyses,
+                review_notification_analyses,
                 send_llm_notification_email,
                 send_llm_review_notification_email,
                 write_llm_notification_preview,
@@ -365,10 +365,12 @@ def main(argv=None) -> int:
                 review_preview_path = write_llm_review_preview(
                     result,
                     str(Path(args.notification_preview_dir) / "manual-review"),
+                    deterministic.jobs,
                 )
                 print(
                     "人工复核预览: {} | 待复核 {} 个岗位".format(
-                        review_preview_path, len(manual_review_analyses(result))
+                        review_preview_path,
+                        len(review_notification_analyses(result, deterministic.jobs)),
                     )
                 )
             if args.send_email:
@@ -380,11 +382,14 @@ def main(argv=None) -> int:
                 else:
                     print("没有通过 LLM 门槛的岗位，邮件未发送。")
                 review_sent_count = send_llm_review_notification_email(
-                    result, send_email, args.review_notification_database
+                    result,
+                    send_email,
+                    args.review_notification_database,
+                    deterministic.jobs,
                 )
                 if review_sent_count:
                     print("人工复核邮件已发送: {} 个岗位".format(review_sent_count))
-                elif manual_review_analyses(result):
+                elif review_notification_analyses(result, deterministic.jobs):
                     print("人工复核岗位此前已通知或没有新项，复核邮件未发送。")
             for error in deterministic.source_errors:
                 print("来源错误: {}".format(error), file=sys.stderr)

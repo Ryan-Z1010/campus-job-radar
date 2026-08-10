@@ -469,6 +469,66 @@ def manual_review_analyses(result: LlmRunResult) -> List[Mapping[str, Any]]:
     ]
 
 
+def deterministic_review_jobs(
+    jobs: Iterable[JobPosting],
+) -> List[JobPosting]:
+    """Return jobs retained by deterministic screening for human checking.
+
+    These jobs are deliberately not sent through the bounded LLM sample.  They
+    still need to reach the candidate, however, because the deterministic
+    review queue is actionable information rather than a silent counter in the
+    run summary.
+    """
+
+    return [
+        job
+        for job in jobs
+        if job.eligibility in {"待核对", "需核对"}
+    ]
+
+
+def _deterministic_review_analysis(job: JobPosting) -> Dict[str, Any]:
+    if job.eligibility == "待核对":
+        reason = "确定性规则缺少明确毕业年份或届别，请核对官方公告。"
+    else:
+        reason = "确定性规则保留该岗位，但毕业年份或招聘批次仍需核对官方公告。"
+    return {
+        "status": "deterministic_review",
+        "job": job.to_dict(),
+        "review_reason": reason,
+        "semantic_match": {
+            "hard_constraint_risks": list(job.score_reasons[:3]),
+        },
+        "critic_review": {},
+        "notify_eligible": False,
+    }
+
+
+def review_notification_analyses(
+    result: LlmRunResult,
+    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
+) -> List[Mapping[str, Any]]:
+    """Combine LLM-review and deterministic-review items for email/preview.
+
+    A job may appear in both queues (for example, an LLM failure on a
+    deterministic ``需核对`` job).  Keep the LLM record, which has the richer
+    diagnostic details, and de-duplicate by job fingerprint.
+    """
+
+    records: List[Mapping[str, Any]] = list(manual_review_analyses(result))
+    seen = {
+        str(analysis.get("job", {}).get("fingerprint", ""))
+        for analysis in records
+        if isinstance(analysis.get("job"), Mapping)
+    }
+    for job in deterministic_review_jobs(deterministic_jobs or []):
+        if job.fingerprint in seen:
+            continue
+        records.append(_deterministic_review_analysis(job))
+        seen.add(job.fingerprint)
+    return records
+
+
 def _manual_review_record(analysis: Mapping[str, Any]) -> Dict[str, Any]:
     job = analysis.get("job", {})
     semantic = analysis.get("semantic_match", {})
@@ -550,20 +610,23 @@ def render_manual_review_digest(analyses: Iterable[Mapping[str, Any]]) -> str:
 
 
 def write_llm_review_preview(
-    result: LlmRunResult, directory: str
+    result: LlmRunResult,
+    directory: str,
+    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
 ) -> Path:
     """Write a review-only preview, separate from approved notifications."""
 
     output = Path(directory)
     output.mkdir(parents=True, exist_ok=True)
-    records = [_manual_review_record(item) for item in manual_review_analyses(result)]
+    analyses = review_notification_analyses(result, deterministic_jobs)
+    records = [_manual_review_record(item) for item in analyses]
     json_path = output / "manual-review.json"
     with json_path.open("w", encoding="utf-8") as handle:
         json.dump(records, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     html_path = output / "manual-review.html"
     html_path.write_text(
-        render_manual_review_digest(manual_review_analyses(result)),
+        render_manual_review_digest(analyses),
         encoding="utf-8",
     )
     return output
@@ -609,15 +672,24 @@ def send_llm_review_notification_email(
     result: LlmRunResult,
     sender: Callable[[str, str], None],
     database: Optional[str] = None,
+    deterministic_jobs: Optional[Iterable[JobPosting]] = None,
 ) -> int:
-    """Send human-review items with a separate retry-safe dedupe database."""
+    """Send all human-review items with retry-safe fingerprint deduplication."""
 
-    analyses = manual_review_analyses(result)
+    analyses = review_notification_analyses(result, deterministic_jobs)
     jobs = [
         JobPosting.from_mapping(dict(analysis["job"]))
         for analysis in analyses
         if isinstance(analysis.get("job"), Mapping)
     ]
+    unique_jobs = []
+    seen = set()
+    for job in jobs:
+        if job.fingerprint in seen:
+            continue
+        unique_jobs.append(job)
+        seen.add(job.fingerprint)
+    jobs = unique_jobs
     store = JobStore(database) if database else None
     try:
         if store is not None:

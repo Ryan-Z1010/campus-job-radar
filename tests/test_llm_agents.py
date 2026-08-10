@@ -18,6 +18,7 @@ from job_radar.llm import (
     LlmResponse,
     LlmRunResult,
     OpenAIResponsesClient,
+    review_notification_analyses,
     manual_review_analyses,
     send_llm_notification_email,
     send_llm_review_notification_email,
@@ -564,6 +565,53 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(second, 0)
         self.assertEqual(len(sent), 1)
         self.assertIn("2 个岗位需要人工复核", sent[0][0])
+
+    def test_deterministic_review_queue_is_sent_and_deduplicated(self):
+        deterministic_job = JobPosting(
+            title="数据开发工程师",
+            company="测试国企",
+            company_type="国企",
+            location="广州",
+            url="https://example.com/jobs/deterministic-review",
+            source_name="测试来源",
+            description="面向应届生，毕业届别请以公告为准。",
+            score=55,
+            eligibility="需核对",
+        )
+        result = LlmRunResult(
+            model="test-model",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:00:01+00:00",
+        )
+        self.assertEqual(len(review_notification_analyses(result, [deterministic_job])), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            output = write_llm_review_preview(
+                result, directory, [deterministic_job]
+            )
+            records = json.loads(
+                (output / "manual-review.json").read_text(encoding="utf-8")
+            )
+            database = str(Path(directory) / "review-sent.sqlite3")
+            sent = []
+            first = send_llm_review_notification_email(
+                result,
+                lambda subject, body: sent.append((subject, body)),
+                database,
+                [deterministic_job],
+            )
+            second = send_llm_review_notification_email(
+                result,
+                lambda subject, body: sent.append((subject, body)),
+                database,
+                [deterministic_job],
+            )
+        self.assertEqual(len(records), 1)
+        self.assertIn("毕业年份或招聘批次仍需核对", records[0]["reason"])
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("1 个岗位需要人工复核", sent[0][0])
+        self.assertIn("数据开发工程师", sent[0][1])
 
     def test_llm_notification_database_deduplicates_successful_sends(self):
         approved = JobPosting(
