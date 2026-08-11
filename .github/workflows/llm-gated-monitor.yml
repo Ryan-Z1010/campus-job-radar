@@ -78,9 +78,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
-            sydney_hour="$(TZ=Australia/Sydney date +%H)"
-            if [ "$sydney_hour" != "17" ]; then
-              echo "跳过本次 UTC 触发：当前悉尼时间不是 17:00（小时=$sydney_hour）。"
+            sydney_time="$(TZ=Australia/Sydney date +%H%M)"
+            if [ "$sydney_time" -lt 1645 ] || [ "$sydney_time" -ge 1800 ]; then
+              echo "跳过本次 UTC 触发：当前悉尼时间不在 16:45-18:00 运行窗口（时间=$sydney_time）。"
               exit 0
             fi
           fi

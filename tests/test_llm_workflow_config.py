@@ -15,7 +15,8 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn('--max-jobs "${MAX_JOBS:-50}"', workflow)
         self.assertIn('cron: "0 6 * * *"', workflow)
         self.assertIn('cron: "0 7 * * *"', workflow)
-        self.assertIn('TZ=Australia/Sydney date +%H', workflow)
+        self.assertIn('TZ=Australia/Sydney date +%H%M', workflow)
+        self.assertIn('sydney_time" -lt 1645', workflow)
 
 
 if __name__ == "__main__":
