@@ -9,8 +9,8 @@ from .client import StructuredLlmClient
 
 
 JD_PROMPT_VERSION = "jd-understanding-v1"
-MATCH_PROMPT_VERSION = "semantic-matching-v6"
-CRITIC_PROMPT_VERSION = "critic-v5"
+MATCH_PROMPT_VERSION = "semantic-matching-v7"
+CRITIC_PROMPT_VERSION = "critic-v6"
 
 
 JD_SCHEMA: Dict[str, Any] = {
@@ -359,6 +359,9 @@ project_highlights 和 language_qualifications 才能作为能力证据。\
 不是需要再次向候选人确认的偏好。如果 sanitized_profile 列出的窗口包含 2026秋招、2027春招、2027届或 2027校招，\
 这些窗口都应视为候选人可以参加，四个标识任意单独出现即可；岗位原文明确出现其中一个窗口、单独的 2027届，或对应的 2027 届校园招聘标识，且岗位 graduation_years 含 2027 时，\
 不得仅因为画像中的毕业月份较早或处于交界月份就判定不确定。\
+如果 deterministic_eligibility 已经是“符合”，且岗位 graduation_years 含 2027，\
+不得再因为候选人 2026 年 11 月毕业、岗位写有“以岗位筛选结果为准”或“优秀的 2026 届毕业生可适当放宽”等措辞，\
+把招聘届别判为 still_uncertain；应依据岗位中的 2027 届证据输出 confirmed_fit。\
 它仍不能替代岗位原文的届别、学历或地点核验。对 deterministic_eligibility 为“待核对”或“需核对”的岗位，\
 只有岗位原文明确给出与候选人可参加招聘窗口、毕业时间或届别相匹配的证据时，eligibility_verdict 才能为 confirmed_fit；\
 岗位原文明确冲突时为 confirmed_unfit；证据不足时必须为 still_uncertain。eligibility_evidence 只能填写岗位原文中的证据短语，\
@@ -438,6 +441,8 @@ class CriticAgent:
 如果岗位的确定性资格是“待核对”或“需核对”，还要检查 eligibility_verdict 与 eligibility_evidence 是否被岗位原文支持；\
 如果 sanitized_profile 列出 2026秋招、2027春招、2027届或 2027校招（含“2027届校园招聘”），这些是已声明可参加的窗口，四个标识任意单独出现即可，\
 不能把画像中的毕业月份本身当作冲突。\
+当 deterministic_eligibility 已经是“符合”时，不得仅因 2026 年 11 月毕业与 2027 届之间的表述差异，\
+或岗位写有“以岗位筛选结果为准”，要求人工复核招聘届别；只有明确的学历、地点或岗位资格冲突才可升级。\
 没有明确岗位证据时不得接受 confirmed_fit。\
 可修正的问题输出 revise 和明确 revision_instructions；关键信息缺失或需要官网/人工确认时输出 manual_review；\
 只有事实有依据且判断校准时才 accept。使用给定 JSON Schema 输出。"""
