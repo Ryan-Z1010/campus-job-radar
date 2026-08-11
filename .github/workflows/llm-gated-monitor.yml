@@ -23,6 +23,14 @@ on:
         required: true
         default: 50
         type: number
+      source_mode:
+        description: "live 只扫描真实岗位接口；full 扫描完整公司池"
+        required: true
+        default: live
+        type: choice
+        options:
+          - live
+          - full
   schedule:
     # GitHub cron is UTC. Run at both possible UTC hours and let the shell
     # guard below keep only 17:00 Australia/Sydney across daylight saving.
@@ -76,6 +84,7 @@ jobs:
           SOURCE_ID: ${{ inputs.source_id }}
           INCLUDE_DEMO: ${{ inputs.include_demo || false }}
           MAX_JOBS: ${{ inputs.max_jobs || 50 }}
+          SOURCE_MODE: ${{ inputs.source_mode || 'live' }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
@@ -91,9 +100,36 @@ jobs:
             printf '%s' "$LLM_PROFILE_JSON" > "$profile_path"
           fi
 
+          sources_path="configs/sources.json"
+          if [ "${SOURCE_MODE:-live}" = "live" ]; then
+            sources_path="${RUNNER_TEMP}/sources.live.json"
+            python - "$sources_path" <<'PY'
+          import json
+          import sys
+          from job_radar.config import load_sources
+
+          output = sys.argv[1]
+          # Campaign/catalog watches are retained in the repository but are
+          # checked separately; daily mail should not wait on hundreds of
+          # pages that do not expose structured job listings.
+          sources = [
+              source
+              for source in load_sources("configs/sources.json")
+              if source.get("type") != "campaign_watch"
+          ]
+          with open(output, "w", encoding="utf-8") as handle:
+              json.dump({"sources": sources}, handle, ensure_ascii=False)
+          print("每日 live 来源数: {}".format(len(sources)))
+          PY
+          elif [ "${SOURCE_MODE:-full}" != "full" ]; then
+            echo "SOURCE_MODE 必须是 live 或 full" >&2
+            exit 2
+          fi
+
           args=(
             llm-analyze
             --profile "$profile_path"
+            --sources "$sources_path"
             --max-jobs "${MAX_JOBS:-50}"
             # The source pool now contains ~1,000 official pages. Collection
             # is I/O-bound, so a larger bounded pool keeps the daily run from

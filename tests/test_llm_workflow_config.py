@@ -19,6 +19,9 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn('sydney_time" -lt 1645', workflow)
         self.assertIn("timeout-minutes: 60", workflow)
         self.assertIn("--collection-workers 64", workflow)
+        self.assertIn('SOURCE_MODE: ${{ inputs.source_mode || \'live\' }}', workflow)
+        self.assertIn('source.get("type") != "campaign_watch"', workflow)
+        self.assertIn('--sources "$sources_path"', workflow)
 
 
 if __name__ == "__main__":
