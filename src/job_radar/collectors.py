@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 import zlib
 from abc import ABC, abstractmethod
@@ -34,6 +35,16 @@ from .network import urlopen_with_retry
 USER_AGENT = "CampusJobRadar/0.1 (+https://github.com/Ryan-Z1010/campus-job-radar)"
 
 
+# A large part of the expanded company pool intentionally points at shared
+# official catalog pages (for example a central SASAC or municipal catalog).
+# Keep one in-memory response per GET URL/header set during a run so duplicate
+# sources do not make hundreds of identical network requests.  The event map
+# also coalesces concurrent requests for the same key.
+_GET_CACHE: Dict[Any, bytes] = {}
+_GET_INFLIGHT: Dict[Any, threading.Event] = {}
+_GET_CACHE_LOCK = threading.Lock()
+
+
 def fetch_bytes(
     url: str,
     timeout: int = 20,
@@ -42,6 +53,36 @@ def fetch_bytes(
     form_body: Dict[str, Any] = None,
     headers: Dict[str, str] = None,
 ) -> bytes:
+    cacheable = (
+        method.upper() == "GET"
+        and json_body is None
+        and form_body is None
+    )
+    cache_key = None
+    if cacheable:
+        cache_key = (
+            url,
+            tuple(
+                sorted(
+                    (str(key).lower(), str(value))
+                    for key, value in (headers or {}).items()
+                )
+            ),
+        )
+        while True:
+            with _GET_CACHE_LOCK:
+                cached = _GET_CACHE.get(cache_key)
+                if cached is not None:
+                    return cached
+                inflight = _GET_INFLIGHT.get(cache_key)
+                if inflight is None:
+                    _GET_INFLIGHT[cache_key] = threading.Event()
+                    break
+            # Another worker is fetching this exact page. Wait for it to
+            # publish a result, then re-check the cache (or become the owner
+            # if the previous request failed).
+            inflight.wait()
+
     request_headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
@@ -62,8 +103,26 @@ def fetch_bytes(
         headers=request_headers,
         method=method.upper(),
     )
-    with urlopen_with_retry(request, timeout=timeout, opener=urlopen) as response:
-        return response.read()
+    try:
+        with urlopen_with_retry(
+            request, timeout=timeout, opener=urlopen
+        ) as response:
+            body = response.read()
+    except Exception:
+        if cacheable and cache_key is not None:
+            with _GET_CACHE_LOCK:
+                event = _GET_INFLIGHT.pop(cache_key, None)
+                if event is not None:
+                    event.set()
+        raise
+
+    if cacheable and cache_key is not None:
+        with _GET_CACHE_LOCK:
+            _GET_CACHE[cache_key] = body
+            event = _GET_INFLIGHT.pop(cache_key, None)
+            if event is not None:
+                event.set()
+    return body
 
 
 class Collector(ABC):
