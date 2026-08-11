@@ -33,9 +33,9 @@ on:
           - full
   schedule:
     # GitHub cron is UTC. Run at both possible UTC hours and let the shell
-    # guard below keep only 17:00 Australia/Sydney across daylight saving.
-    - cron: "0 6 * * *"
-    - cron: "0 7 * * *"
+    # guard below keep only 07:00 Australia/Sydney across daylight saving.
+    - cron: "0 20 * * *"
+    - cron: "0 21 * * *"
 
 permissions:
   contents: read
@@ -90,7 +90,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
             sydney_time="$(TZ=Australia/Sydney date +%H%M)"
             if [ "$sydney_time" -lt 1645 ] || [ "$sydney_time" -ge 1800 ]; then
-              echo "跳过本次 UTC 触发：当前悉尼时间不在 16:45-18:00 运行窗口（时间=$sydney_time）。"
+              echo "跳过本次 UTC 触发：当前悉尼时间不在 06:45-08:00 运行窗口（时间=$sydney_time）。"
               exit 0
             fi
           fi

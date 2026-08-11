@@ -31,7 +31,7 @@
 
 ## 5. 调度注意事项
 
-`LLM gated job monitor` 工作流负责在悉尼时间每天 17:00 左右定时执行 LLM 门槛分析（允许 GitHub 延迟时在16:45后启动，并通过时区守卫适配夏令时）：默认最多分析 50 个岗位，并优先处理确定性“待核对/需核对”队列；以 16 个并行采集 worker 扫描公司池，单次工作流最长运行 60 分钟，生成报告和通知预览。只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和 LLM 复核后仍不确定的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
+`LLM gated job monitor` 工作流负责在悉尼时间每天 07:00 左右定时执行 LLM 门槛分析（允许 GitHub 延迟时在 06:45 后启动，并通过时区守卫适配夏令时）：默认最多分析 50 个岗位，并优先处理确定性“待核对/需核对”队列；以 16 个并行采集 worker 扫描公司池，单次工作流最长运行 60 分钟，生成报告和通知预览。只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和 LLM 复核后仍不确定的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact。
 `reports/llm/latest.json` 同时记录确定性采集的来源统计和来源错误，便于区分“当前没有岗位”和“来源暂时不可访问”。
 
 首次验证或排查来源时，建议手动运行并填写 `source_id=demo_official_jobs`、`include_demo=true`、`max_jobs=1`、`send_email=false`，这样只验证一条演示岗位的 LLM 链路，不必等待全部招聘来源采集。正式定时运行不填写 `source_id`，仍会扫描所有启用的真实来源。
