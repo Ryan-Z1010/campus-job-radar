@@ -46,7 +46,7 @@ class ScoringTests(unittest.TestCase):
         score, _ = score_job(job, self.profile)
         self.assertLess(score, self.profile["minimum_score"])
 
-    def test_next_campaign_year_requires_review_without_penalty(self):
+    def test_bare_2027_cohort_is_eligible(self):
         job = JobPosting(
             title="数据开发工程师（2027届）",
             company="测试央企",
@@ -57,7 +57,7 @@ class ScoringTests(unittest.TestCase):
             graduation_years=[2027],
         )
         score, _ = score_job(job, self.profile)
-        self.assertEqual(job.eligibility, "需核对")
+        self.assertEqual(job.eligibility, "符合")
         self.assertGreater(score, self.profile["minimum_score"])
 
     def test_accepted_spring_window_makes_2027_role_eligible(self):

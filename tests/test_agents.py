@@ -52,7 +52,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result.confidence, 0.0)
         self.assertIn("不支持的采集器类型", result.error)
 
-    def test_eligibility_agent_normalizes_scores_and_queues_uncertain_job(self):
+    def test_eligibility_agent_normalizes_scores_and_accepts_bare_2027_cohort(self):
         job = JobPosting(
             title="  数据   开发工程师（2027届） ",
             company="测试央企",
@@ -62,11 +62,11 @@ class AgentTests(unittest.TestCase):
             source_name="测试来源",
         )
         result = EligibilityAgent().run([job], self.profile, "test")
-        self.assertEqual(result.status, AgentStatus.NEEDS_REVIEW)
+        self.assertEqual(result.status, AgentStatus.SUCCESS)
         self.assertEqual(result.jobs[0].title, "数据 开发工程师（2027届）")
-        self.assertEqual(result.jobs[0].eligibility, "需核对")
+        self.assertEqual(result.jobs[0].eligibility, "符合")
         self.assertGreater(result.jobs[0].score, 0)
-        self.assertEqual(result.metadata["eligibility_counts"]["需核对"], 1)
+        self.assertEqual(result.metadata["eligibility_counts"]["符合"], 1)
 
     def test_review_agent_deduplicates_and_rejects_unsafe_links(self):
         first = JobPosting(

@@ -126,6 +126,7 @@ class LlmAgentTests(unittest.TestCase):
             "accepted_recruitment_windows": [
                 "2026秋招",
                 "2027春招",
+                "2027届",
                 "2027校招",
             ],
             "education": "硕士",
@@ -161,7 +162,7 @@ class LlmAgentTests(unittest.TestCase):
         self.assertEqual(safe["skills"], ["Python", "SQL"])
         self.assertEqual(
             safe["accepted_recruitment_windows"],
-            ["2026秋招", "2027春招", "2027校招"],
+            ["2026秋招", "2027春招", "2027届", "2027校招"],
         )
         self.assertIn("Python", safe["preference_keywords"])
         self.assertNotIn("test@example.com", safe["experience_highlights"][0])

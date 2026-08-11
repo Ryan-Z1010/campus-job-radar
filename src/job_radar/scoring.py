@@ -149,6 +149,7 @@ def _accepted_recruitment_windows(profile: Dict[str, Any]) -> set[str]:
         "2027年度校招": "2027校招",
         "2027年度校园招聘": "2027校招",
         "2027届正式校招": "2027校招",
+        "2027届": "2027届",
     }
     return {
         aliases.get(str(item), str(item))
@@ -179,11 +180,13 @@ def evaluate_eligibility(job: JobPosting, profile: Dict[str, Any]) -> str:
                 "review_graduation_years", []
             ) else "可能不符"
         return "符合"
-    if any(
-        year in review_years
-        for year in job.graduation_years
-    ):
-        return "需核对"
+    if any(year in review_years for year in job.graduation_years):
+        # A standalone 2027 cohort label is explicitly accepted by the
+        # profile. An explicitly named, unconfigured season (for example
+        # 2027秋招) remains review-only.
+        if not window:
+            return "符合" if "2027届" in accepted_windows else "需核对"
+        return "符合" if window in accepted_windows else "需核对"
     return "可能不符"
 
 

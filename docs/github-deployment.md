@@ -17,7 +17,7 @@
 - `ARK_API_KEY`
 - `ARK_BASE_URL`（可选，默认火山方舟北京 Base URL）
 - `ARK_MODEL`（可选，默认 `doubao-seed-2-0-lite-260428`）
-- `LLM_PROFILE_JSON`（推荐；脱敏后的画像 JSON，不包含姓名、邮箱、电话或简历原文；你的画像应包含 `accepted_recruitment_windows: ["2026秋招", "2027春招", "2027校招"]`）
+- `LLM_PROFILE_JSON`（推荐；脱敏后的画像 JSON，不包含姓名、邮箱、电话或简历原文；你的画像应包含 `accepted_recruitment_windows: ["2026秋招", "2027春招", "2027届", "2027校招"]`）
 
 邮箱应使用应用专用密码。LLM 工作流只有在 Ark API、脱敏画像和以上邮件配置均完整时才发送，否则只生成预览。
 
