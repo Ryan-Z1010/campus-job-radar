@@ -123,7 +123,11 @@ class LlmAgentTests(unittest.TestCase):
         self.profile = {
             "graduation": "2026-11",
             "review_graduation_years": [2027],
-            "accepted_recruitment_windows": ["2026秋招", "2027春招"],
+            "accepted_recruitment_windows": [
+                "2026秋招",
+                "2027春招",
+                "2027校招",
+            ],
             "education": "硕士",
             "target_roles": ["AI智能体", "数据开发"],
             "preferred_cities": ["广州", "上海"],
@@ -156,7 +160,8 @@ class LlmAgentTests(unittest.TestCase):
         self.assertNotIn("name", safe)
         self.assertEqual(safe["skills"], ["Python", "SQL"])
         self.assertEqual(
-            safe["accepted_recruitment_windows"], ["2026秋招", "2027春招"]
+            safe["accepted_recruitment_windows"],
+            ["2026秋招", "2027春招", "2027校招"],
         )
         self.assertIn("Python", safe["preference_keywords"])
         self.assertNotIn("test@example.com", safe["experience_highlights"][0])
