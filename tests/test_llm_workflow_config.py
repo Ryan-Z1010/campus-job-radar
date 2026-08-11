@@ -12,7 +12,7 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("default: 50", workflow)
         self.assertIn("MAX_JOBS: ${{ inputs.max_jobs || 50 }}", workflow)
-        self.assertIn('--max-jobs "${MAX_JOBS:-50}"', workflow)
+        self.assertIn('MAX_JOBS: ${{ inputs.max_jobs || 50 }}', workflow)
         self.assertIn('cron: "0 6 * * *"', workflow)
         self.assertIn('cron: "0 7 * * *"', workflow)
         self.assertIn('TZ=Australia/Sydney date +%H%M', workflow)
@@ -22,6 +22,7 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn('SOURCE_MODE: ${{ inputs.source_mode || \'live\' }}', workflow)
         self.assertIn('source.get("type") != "campaign_watch"', workflow)
         self.assertIn('--sources "$sources_path"', workflow)
+        self.assertIn('echo 10 || echo "${MAX_JOBS:-50}"', workflow)
 
 
 if __name__ == "__main__":

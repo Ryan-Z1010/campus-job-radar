@@ -130,7 +130,9 @@ jobs:
             llm-analyze
             --profile "$profile_path"
             --sources "$sources_path"
-            --max-jobs "${MAX_JOBS:-50}"
+            # A scheduled run should finish promptly; manual runs can still
+            # raise this input to 50 when a deeper review is desired.
+            --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 10 || echo "${MAX_JOBS:-50}")"
             # The source pool now contains ~1,000 official pages. Collection
             # is I/O-bound, so a larger bounded pool keeps the daily run from
             # spending tens of minutes waiting on slow/blocked pages.
