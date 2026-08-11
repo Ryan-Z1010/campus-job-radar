@@ -99,6 +99,7 @@ jobs:
             # is I/O-bound, so a larger bounded pool keeps the daily run from
             # spending tens of minutes waiting on slow/blocked pages.
             --collection-workers 64
+            --analysis-workers 4
             --notify-min-score 70
             --output reports/llm/latest.json
             --cache-database data/llm_analysis.sqlite3

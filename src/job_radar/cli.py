@@ -193,6 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="确定性来源并行采集数；默认 4，设为 1 可恢复串行",
     )
     llm_analyze.add_argument(
+        "--analysis-workers",
+        type=int,
+        default=1,
+        help="岗位 LLM 分析并行数；默认 1，需根据供应商限流谨慎提高",
+    )
+    llm_analyze.add_argument(
         "--model",
         help="豆包模型或推理接入点；默认读取 ARK_MODEL/DOUBAO_MODEL",
     )
@@ -330,6 +336,7 @@ def main(argv=None) -> int:
                 profile,
                 max_jobs=args.max_jobs,
                 notify_min_score=args.notify_min_score,
+                analysis_workers=args.analysis_workers,
             )
             result.deterministic_source_errors = list(
                 deterministic.source_errors

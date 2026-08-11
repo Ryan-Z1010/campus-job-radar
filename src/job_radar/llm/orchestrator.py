@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
@@ -105,11 +106,14 @@ class LlmRecruitmentOrchestrator:
         profile: Mapping[str, Any],
         max_jobs: int = DEFAULT_LLM_MAX_JOBS,
         notify_min_score: int = DEFAULT_LLM_NOTIFY_MIN_SCORE,
+        analysis_workers: int = 1,
     ) -> LlmRunResult:
         if max_jobs < 1:
             raise ValueError("max_jobs 必须大于 0")
         if not 0 <= notify_min_score <= 100:
             raise ValueError("notify_min_score 必须位于 0 到 100")
+        if analysis_workers < 1:
+            raise ValueError("analysis_workers 必须大于 0")
         started_at = utc_now_iso()
         ordered = sorted(
             list(jobs),
@@ -129,10 +133,10 @@ class LlmRecruitmentOrchestrator:
                 uncached.append((job, None))
             else:
                 cached_jobs.append((job, cached))
-        selected = uncached[:max_jobs]
-        remaining = max_jobs - len(selected)
-        if remaining:
-            selected.extend(cached_jobs[:remaining])
+        selected_uncached = uncached[:max_jobs]
+        remaining = max_jobs - len(selected_uncached)
+        selected_cached = cached_jobs[:remaining]
+        selected = selected_uncached + selected_cached
         result = LlmRunResult(
             model=self.client.model,
             started_at=started_at,
@@ -140,19 +144,22 @@ class LlmRecruitmentOrchestrator:
             selected=len(selected),
         )
 
-        for job, cached in selected:
-            if cached is not None:
-                cached = self._apply_notification_gate(
-                    cached, job, notify_min_score
+        if analysis_workers == 1 or len(selected_uncached) < 2:
+            uncached_analyses = [
+                self._analyze_job(job, profile)
+                for job, _ in selected_uncached
+            ]
+        else:
+            worker_count = min(analysis_workers, len(selected_uncached))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                uncached_analyses = list(
+                    executor.map(
+                        lambda item: self._analyze_job(item[0], profile),
+                        selected_uncached,
+                    )
                 )
-                result.analyses.append(cached)
-                result.cache_hits += 1
-                if cached.get("notify_eligible"):
-                    result.notify_eligible += 1
-                self._count_analysis(result, cached)
-                continue
 
-            analysis = self._analyze_job(job, profile)
+        for (job, _), analysis in zip(selected_uncached, uncached_analyses):
             analysis = self._apply_notification_gate(
                 analysis, job, notify_min_score
             )
@@ -164,6 +171,19 @@ class LlmRecruitmentOrchestrator:
                 "cacheable", True
             ):
                 self._cache_put(job, profile, analysis)
+
+        for job, cached in selected_cached:
+            if cached is not None:
+                cached = self._apply_notification_gate(
+                    cached, job, notify_min_score
+                )
+                result.analyses.append(cached)
+                result.cache_hits += 1
+                if cached.get("notify_eligible"):
+                    result.notify_eligible += 1
+                self._count_analysis(result, cached)
+                continue
+
 
         if result.failed and result.analyzed == 0:
             result.status = AgentStatus.FAILED
