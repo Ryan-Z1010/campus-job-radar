@@ -84,7 +84,14 @@ def _compact(value: Any) -> str:
 
 
 def _explicit_recruitment_window(job: JobPosting) -> str:
-    searchable = _compact("{} {} {}".format(job.title, job.description, job.education))
+    # Some official collectors put the cycle in source_name while the
+    # individual position title is generic. Treat that official source label
+    # as evidence, but still require an explicit campus/recruitment marker.
+    searchable = _compact(
+        "{} {} {} {}".format(
+            job.title, job.description, job.education, job.source_name
+        )
+    )
     for window, markers in _WINDOW_MARKERS.items():
         if any(_compact(marker) in searchable for marker in markers):
             return window

@@ -89,6 +89,20 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(recruitment_window(job), "2027校招")
         self.assertEqual(evaluate_eligibility(job, self.profile), "符合")
 
+    def test_source_name_can_provide_official_campus_window_evidence(self):
+        job = JobPosting(
+            title="算法工程师",
+            company="测试央企",
+            company_type="央企",
+            location="广州",
+            url="https://example.com/4-source",
+            source_name="测试央企2027届校园招聘",
+            graduation_years=[2027],
+        )
+
+        self.assertEqual(recruitment_window(job), "2027校招")
+        self.assertEqual(evaluate_eligibility(job, self.profile), "符合")
+
     def test_publication_date_can_identify_2027_spring_window(self):
         job = JobPosting(
             title="算法工程师（2027届）",
