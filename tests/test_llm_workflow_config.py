@@ -17,6 +17,8 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn('cron: "0 7 * * *"', workflow)
         self.assertIn('TZ=Australia/Sydney date +%H%M', workflow)
         self.assertIn('sydney_time" -lt 1645', workflow)
+        self.assertIn("timeout-minutes: 60", workflow)
+        self.assertIn("--collection-workers 16", workflow)
 
 
 if __name__ == "__main__":
