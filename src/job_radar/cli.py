@@ -30,6 +30,27 @@ def _read_doubao_key_file(path: str) -> str:
     raise ConfigError("豆包 Key 文件中没有找到“Key 值”字段")
 
 
+def _job_matches_keywords(job, keywords) -> bool:
+    """Return whether a job contains at least one requested sweep keyword."""
+
+    terms = [
+        str(keyword).strip().casefold()
+        for keyword in (keywords or [])
+        if str(keyword).strip()
+    ]
+    if not terms:
+        return True
+    text = " ".join(
+        (
+            job.title,
+            job.description,
+            job.education,
+            job.source_name,
+        )
+    ).casefold()
+    return any(term in text for term in terms)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="job-radar",
@@ -175,6 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="只运行指定来源 ID，可重复传入",
     )
     llm_analyze.add_argument(
+        "--job-keyword",
+        action="append",
+        help="只分析标题、JD、学历或来源中包含任一关键词的岗位，可重复传入",
+    )
+    llm_analyze.add_argument(
         "--max-jobs",
         type=int,
         default=50,
@@ -295,6 +321,18 @@ def main(argv=None) -> int:
                 source_ids=args.source,
                 collection_workers=args.collection_workers,
             )
+            if args.job_keyword:
+                before_keyword_filter = len(deterministic.jobs)
+                deterministic.jobs = [
+                    job
+                    for job in deterministic.jobs
+                    if _job_matches_keywords(job, args.job_keyword)
+                ]
+                print(
+                    "关键词筛选: {} -> {} 个岗位".format(
+                        before_keyword_filter, len(deterministic.jobs)
+                    )
+                )
             api_key = (
                 os.environ.get("ARK_API_KEY")
                 or os.environ.get("DOUBAO_API_KEY")
@@ -350,6 +388,8 @@ def main(argv=None) -> int:
                 "reviewed": deterministic.reviewed,
                 "ready": deterministic.ready,
                 "review_required": deterministic.review_required,
+                "keyword_filtered": len(deterministic.jobs),
+                "keyword_terms": list(args.job_keyword or []),
             }
             review_queue = deterministic_review_jobs(deterministic.jobs)
             selected_review = sum(

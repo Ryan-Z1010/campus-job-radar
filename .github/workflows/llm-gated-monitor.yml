@@ -31,6 +31,16 @@ on:
         options:
           - live
           - full
+      agent_sweep:
+        description: "专项筛查全部央企/国企中的 Agent 相关岗位"
+        required: true
+        default: false
+        type: boolean
+      resend_all:
+        description: "专项筛查时忽略历史通知去重，重新发送全部匹配岗位"
+        required: true
+        default: false
+        type: boolean
   schedule:
     # GitHub cron is UTC. Run at both possible UTC hours and let the shell
     # guard below keeps scheduled runs within a broad 06:00-09:00
@@ -86,6 +96,8 @@ jobs:
           INCLUDE_DEMO: ${{ inputs.include_demo || false }}
           MAX_JOBS: ${{ inputs.max_jobs || 50 }}
           SOURCE_MODE: ${{ inputs.source_mode || 'live' }}
+          AGENT_SWEEP: ${{ inputs.agent_sweep || false }}
+          RESEND_ALL: ${{ inputs.resend_all || false }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
@@ -102,7 +114,24 @@ jobs:
           fi
 
           sources_path="configs/sources.json"
-          if [ "${SOURCE_MODE:-live}" = "live" ]; then
+          if [ "${AGENT_SWEEP:-false}" = "true" ]; then
+            sources_path="${RUNNER_TEMP}/sources.state-agent.json"
+            python - "$sources_path" <<'PY'
+          import json
+          import sys
+          from job_radar.config import load_sources
+
+          output = sys.argv[1]
+          sources = [
+              source
+              for source in load_sources("configs/sources.json")
+              if source.get("company_type") in {"央企", "国企"}
+          ]
+          with open(output, "w", encoding="utf-8") as handle:
+              json.dump({"sources": sources}, handle, ensure_ascii=False)
+          print("央国企 Agent 专项来源数: {}".format(len(sources)))
+          PY
+          elif [ "${SOURCE_MODE:-live}" = "live" ]; then
             sources_path="${RUNNER_TEMP}/sources.live.json"
             python - "$sources_path" <<'PY'
           import json
@@ -151,6 +180,22 @@ jobs:
           fi
           if [ -n "${SOURCE_ID:-}" ]; then
             args+=(--source "$SOURCE_ID")
+          fi
+          if [ "${AGENT_SWEEP:-false}" = "true" ]; then
+            args+=(
+              --job-keyword "agent"
+              --job-keyword "智能体"
+              --job-keyword "智能代理"
+              --job-keyword "多智能体"
+              --job-keyword "大模型应用"
+              --job-keyword "智能助手"
+            )
+          fi
+          if [ "${RESEND_ALL:-false}" = "true" ]; then
+            args+=(
+              --notification-database "${RUNNER_TEMP}/agent-sweep-notification.sqlite3"
+              --review-notification-database "${RUNNER_TEMP}/agent-sweep-review.sqlite3"
+            )
           fi
           if [ "${ALLOW_EMAIL:-false}" = "true" ] \
             && [ -n "${ALERT_EMAIL:-}" ] \

@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_radar.agents import AgentStatus
-from job_radar.cli import _read_doubao_key_file, main
+from job_radar.cli import _job_matches_keywords, _read_doubao_key_file, main
 from job_radar.llm import (
     DoubaoChatClient,
     LlmAnalysisCache,
@@ -154,6 +154,29 @@ class LlmAgentTests(unittest.TestCase):
             score=80,
             eligibility="需核对",
         )
+
+    def test_agent_sweep_keyword_matches_job_text_and_source(self):
+        self.assertTrue(
+            _job_matches_keywords(
+                self.job,
+                ["智能体"],
+            )
+        )
+        self.assertTrue(
+            _job_matches_keywords(
+                JobPosting(
+                    title="数据开发工程师",
+                    company="测试国企",
+                    company_type="国企",
+                    location="广州",
+                    url="https://example.com/job/source-keyword",
+                    source_name="Agent招聘官网",
+                    description="负责数据平台开发",
+                ),
+                ["agent"],
+            )
+        )
+        self.assertFalse(_job_matches_keywords(self.job, ["机器人"]))
 
     def test_profile_is_allowlisted_before_llm_call(self):
         safe = sanitize_profile(self.profile)
