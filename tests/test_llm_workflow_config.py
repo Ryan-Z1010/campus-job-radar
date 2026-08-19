@@ -33,7 +33,9 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn('source.get("type") != "campaign_watch"', workflow)
         self.assertIn('source.get("daily_monitor")', workflow)
         self.assertIn('--sources "$sources_path"', workflow)
-        self.assertIn('echo 10 || echo "${MAX_JOBS:-50}"', workflow)
+        self.assertIn('echo 50 || echo "${MAX_JOBS:-50}"', workflow)
+        self.assertIn('MONITORING_CONFIG: configs/monitoring.json', workflow)
+        self.assertIn('monitoring.get("daily_scan_all")', workflow)
 
 
 if __name__ == "__main__":

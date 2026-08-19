@@ -96,6 +96,7 @@ jobs:
           INCLUDE_DEMO: ${{ inputs.include_demo || false }}
           MAX_JOBS: ${{ inputs.max_jobs || 50 }}
           SOURCE_MODE: ${{ inputs.source_mode || 'live' }}
+          MONITORING_CONFIG: configs/monitoring.json
           AGENT_SWEEP: ${{ inputs.agent_sweep || false }}
           RESEND_ALL: ${{ inputs.resend_all || false }}
         run: |
@@ -114,42 +115,56 @@ jobs:
           fi
 
           sources_path="configs/sources.json"
+          monitoring_path="${MONITORING_CONFIG:-configs/monitoring.json}"
           if [ "${AGENT_SWEEP:-false}" = "true" ]; then
             sources_path="${RUNNER_TEMP}/sources.state-agent.json"
             python - "$sources_path" <<'PY'
           import json
           import sys
-          from job_radar.config import load_sources
+          from job_radar.config import filter_sources_for_monitoring, load_monitoring, load_sources
 
           output = sys.argv[1]
+          monitoring = load_monitoring("configs/monitoring.json")
           sources = [
               source
-              for source in load_sources("configs/sources.json")
+              for source in filter_sources_for_monitoring(
+                  load_sources("configs/sources.json"), monitoring
+              )
               if source.get("company_type") in {"央企", "国企"}
           ]
           with open(output, "w", encoding="utf-8") as handle:
               json.dump({"sources": sources}, handle, ensure_ascii=False)
           print("央国企 Agent 专项来源数: {}".format(len(sources)))
           PY
-          elif [ "${SOURCE_MODE:-live}" = "live" ]; then
+          elif [ "${GITHUB_EVENT_NAME:-}" = "schedule" ] || [ "${SOURCE_MODE:-live}" = "live" ]; then
             sources_path="${RUNNER_TEMP}/sources.live.json"
-            python - "$sources_path" <<'PY'
+            python - "$sources_path" "${GITHUB_EVENT_NAME:-}" <<'PY'
           import json
           import sys
-          from job_radar.config import load_sources
+          from job_radar.config import filter_sources_for_monitoring, load_monitoring, load_sources
 
           output = sys.argv[1]
-          # Most campaign/catalog watches are retained in the repository but
-          # checked separately. Sources explicitly marked daily_monitor are
-          # lightweight official feeds that should participate in daily mail.
-          sources = [
-              source
-              for source in load_sources("configs/sources.json")
-              if source.get("type") != "campaign_watch" or source.get("daily_monitor")
-          ]
+          scheduled = len(sys.argv) > 2 and sys.argv[2] == "schedule"
+          monitoring = load_monitoring("configs/monitoring.json")
+          all_sources = filter_sources_for_monitoring(
+              load_sources("configs/sources.json"), monitoring
+          )
+          if scheduled and monitoring.get("daily_scan_all"):
+              # The scheduled monitor intentionally checks every remaining
+              # official source; already-applied companies are removed before
+              # collection and again at the job level in the CLI.
+              sources = all_sources
+          else:
+              # Manual live runs retain the faster structured-source mode.
+              sources = [
+                  source
+                  for source in all_sources
+                  if source.get("type") != "campaign_watch"
+                  or source.get("daily_monitor")
+              ]
           with open(output, "w", encoding="utf-8") as handle:
               json.dump({"sources": sources}, handle, ensure_ascii=False)
-          print("每日 live 来源数: {}".format(len(sources)))
+          print("每日来源数: {}{}".format(len(sources), "（全量）" if scheduled else "（live）"))
           PY
           elif [ "${SOURCE_MODE:-full}" != "full" ]; then
             echo "SOURCE_MODE 必须是 live 或 full" >&2
@@ -160,9 +175,10 @@ jobs:
             llm-analyze
             --profile "$profile_path"
             --sources "$sources_path"
-            # A scheduled run should finish promptly; manual runs can still
-            # raise this input to 50 when a deeper review is desired.
-            --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 10 || echo "${MAX_JOBS:-50}")"
+            # Daily collection is full-pool; analyze up to 50 best candidates
+            # so newly opened AI/data roles are not silently left behind.
+            --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 50 || echo "${MAX_JOBS:-50}")"
+            --monitoring "$monitoring_path"
             # The source pool now contains ~1,000 official pages. Collection
             # is I/O-bound, so a larger bounded pool keeps the daily run from
             # spending tens of minutes waiting on slow/blocked pages.

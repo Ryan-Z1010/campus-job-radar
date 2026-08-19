@@ -3,11 +3,63 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 
 class ConfigError(ValueError):
     pass
+
+
+def load_monitoring(path: str = "configs/monitoring.json") -> Dict[str, Any]:
+    """Load user-specific monitoring preferences.
+
+    The source pool is shared, while exclusions such as companies that the
+    user has already applied to belong to the user's monitoring preferences.
+    Keeping these preferences in a small config file lets both scheduled
+    workflows and local runs apply exactly the same rules.
+    """
+
+    config_path = Path(path)
+    if not config_path.exists():
+        return {"daily_scan_all": False, "excluded_company_keywords": []}
+    data = load_json(path)
+    keywords = data.get("excluded_company_keywords", [])
+    if not isinstance(keywords, list) or not all(
+        isinstance(item, str) and item.strip() for item in keywords
+    ):
+        raise ConfigError(
+            "监控配置 excluded_company_keywords 必须是非空字符串数组"
+        )
+    return {
+        "daily_scan_all": bool(data.get("daily_scan_all", False)),
+        "excluded_company_keywords": list(dict.fromkeys(item.strip() for item in keywords)),
+    }
+
+
+def _excluded_company_match(value: Any, keywords: Iterable[str]) -> bool:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return False
+    return any(str(keyword).strip().casefold() in text for keyword in keywords)
+
+
+def source_is_excluded(source: Dict[str, Any], monitoring: Dict[str, Any]) -> bool:
+    """Return whether a source belongs to a company the user already applied to."""
+
+    keywords = monitoring.get("excluded_company_keywords", [])
+    haystack = " ".join(
+        str(source.get(field, ""))
+        for field in ("id", "name", "company", "company_prefix")
+    )
+    return _excluded_company_match(haystack, keywords)
+
+
+def filter_sources_for_monitoring(
+    sources: Iterable[Dict[str, Any]], monitoring: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Remove sources for companies that should no longer be scanned/notified."""
+
+    return [source for source in sources if not source_is_excluded(source, monitoring)]
 
 
 def _campaign_fallback(source: Dict[str, Any]) -> Dict[str, str]:

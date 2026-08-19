@@ -9,7 +9,14 @@ from pathlib import Path
 
 from .agents import OrchestratorAgent, write_agent_trace
 from .audit import audit_sources
-from .config import ConfigError, load_dotenv, load_profile, load_sources
+from .config import (
+    ConfigError,
+    filter_sources_for_monitoring,
+    load_dotenv,
+    load_monitoring,
+    load_profile,
+    load_sources,
+)
 from .notifications import send_email
 from .pipeline import run_pipeline
 from .reporting import write_reports
@@ -49,6 +56,18 @@ def _job_matches_keywords(job, keywords) -> bool:
         )
     ).casefold()
     return any(term in text for term in terms)
+
+
+def _job_is_excluded_company(job, monitoring) -> bool:
+    """Keep already-applied companies out even when an aggregator returns them."""
+
+    keywords = monitoring.get("excluded_company_keywords", [])
+    haystack = " ".join((job.company, job.source_name)).casefold()
+    return any(
+        str(keyword).strip().casefold() in haystack
+        for keyword in keywords
+        if str(keyword).strip()
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -147,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_analyze.add_argument("--profile", default="configs/profile.example.json")
     llm_analyze.add_argument("--sources", default="configs/sources.json")
+    llm_analyze.add_argument(
+        "--monitoring",
+        default="configs/monitoring.json",
+        help="用户监控偏好；用于每日全量扫描和已投公司排除",
+    )
     llm_analyze.add_argument("--env-file", default=".env")
     llm_analyze.add_argument(
         "--key-file",
@@ -314,13 +338,32 @@ def main(argv=None) -> int:
                 )
             load_dotenv(args.env_file)
             profile = load_profile(args.profile)
+            monitoring = load_monitoring(args.monitoring)
+            sources = filter_sources_for_monitoring(
+                load_sources(args.sources), monitoring
+            )
+            excluded_before = len(load_sources(args.sources)) - len(sources)
+            if excluded_before:
+                print("已投公司来源排除: {} 个".format(excluded_before))
             deterministic = OrchestratorAgent().run(
                 profile=profile,
-                sources=load_sources(args.sources),
+                sources=sources,
                 include_demo=args.include_demo,
                 source_ids=args.source,
                 collection_workers=args.collection_workers,
             )
+            before_company_filter = len(deterministic.jobs)
+            deterministic.jobs = [
+                job
+                for job in deterministic.jobs
+                if not _job_is_excluded_company(job, monitoring)
+            ]
+            if before_company_filter != len(deterministic.jobs):
+                print(
+                    "已投公司岗位排除: {} 个".format(
+                        before_company_filter - len(deterministic.jobs)
+                    )
+                )
             if args.job_keyword:
                 before_keyword_filter = len(deterministic.jobs)
                 deterministic.jobs = [
