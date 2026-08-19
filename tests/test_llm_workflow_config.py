@@ -31,6 +31,7 @@ class LlmWorkflowConfigTests(unittest.TestCase):
         self.assertIn("--collection-workers 64", workflow)
         self.assertIn('SOURCE_MODE: ${{ inputs.source_mode || \'live\' }}', workflow)
         self.assertIn('source.get("type") != "campaign_watch"', workflow)
+        self.assertIn('source.get("daily_monitor")', workflow)
         self.assertIn('--sources "$sources_path"', workflow)
         self.assertIn('echo 10 || echo "${MAX_JOBS:-50}"', workflow)
 

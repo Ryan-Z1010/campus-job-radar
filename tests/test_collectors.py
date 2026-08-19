@@ -35,6 +35,7 @@ from job_radar.collectors import (
     IguopinCompanyCollector,
     JsonApiCollector,
     LiepinStaticCampusCollector,
+    MeituanCampusCollector,
     MokaCampusCollector,
     NeteaseGameCampusCollector,
     NoticeJsonCollector,
@@ -52,6 +53,98 @@ from job_radar.collectors import (
 
 
 class CollectorTests(unittest.TestCase):
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_meituan_official_campus_collects_full_time_jobs(self, fetch):
+        def page(page_no, items, total_page=2):
+            return json.dumps(
+                {
+                    "status": 1,
+                    "message": "成功",
+                    "data": {
+                        "list": items,
+                        "page": {
+                            "pageNo": page_no,
+                            "pageSize": 100,
+                            "totalPage": total_page,
+                            "totalCount": 2,
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+        fetch.side_effect = [
+            page(
+                1,
+                [
+                    {
+                        "jobUnionId": "mt-agent-1",
+                        "name": "大模型算法工程师",
+                        "jobFamily": "技术类",
+                        "cityList": [{"name": "北京市"}, {"name": "上海市"}],
+                        "department": [{"name": "基础研发平台"}],
+                        "jobDuty": "研发大模型Agent",
+                        "jobRequirement": "硕士及以上，熟悉Python",
+                        "refreshTime": 1767225600000,
+                    }
+                ],
+            ),
+            page(
+                2,
+                [
+                    {
+                        "jobUnionId": "mt-data-2",
+                        "name": "数据分析师",
+                        "cityList": [{"name": "广州市"}],
+                        "jobDuty": "负责数据分析",
+                        "refreshTime": 1767225600000,
+                    }
+                ],
+            ),
+        ]
+        source = {
+            "id": "meituan_campus_2027",
+            "name": "美团2027校园招聘",
+            "type": "campaign_watch",
+            "collector": "meituan_official_campus",
+            "api_url": "https://zhaopin.meituan.com/api/official/job/getJobList",
+            "referer": "https://zhaopin.meituan.com/web/campus",
+            "company": "美团",
+            "company_type": "私企",
+            "graduation_years": [2027],
+            "page_size": 100,
+            "max_pages": 2,
+        }
+
+        jobs = MeituanCampusCollector(source).collect()
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0].external_id, "mt-agent-1")
+        self.assertEqual(jobs[0].location, "北京市、上海市")
+        self.assertIn("研发大模型Agent", jobs[0].description)
+        self.assertEqual(jobs[0].graduation_years, [2027])
+        self.assertIn("jobUnionId=mt-agent-1", jobs[0].url)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(
+            fetch.call_args_list[0].kwargs["json_body"]["jobType"],
+            [{"code": "1", "subCode": []}],
+        )
+
+    @patch("job_radar.collectors.fetch_bytes")
+    def test_meituan_official_campus_rejects_bad_response(self, fetch):
+        fetch.return_value = json.dumps(
+            {"status": 0, "message": "请求参数格式不正确！"}
+        ).encode("utf-8")
+
+        source = {
+            "id": "meituan_campus_2027",
+            "name": "美团2027校园招聘",
+            "type": "campaign_watch",
+            "collector": "meituan_official_campus",
+            "company": "美团",
+        }
+        with self.assertRaisesRegex(ValueError, "返回失败状态"):
+            MeituanCampusCollector(source).collect()
+
     @staticmethod
     def _pingan_source():
         return {

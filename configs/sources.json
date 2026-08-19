@@ -3765,8 +3765,15 @@
       "id": "meituan_campus_2027",
       "name": "美团2027校园招聘",
       "type": "campaign_watch",
+      "collector": "meituan_official_campus",
+      "daily_monitor": true,
       "enabled": true,
       "homepage": "https://zhaopin.meituan.com/",
+      "api_url": "https://zhaopin.meituan.com/api/official/job/getJobList",
+      "referer": "https://zhaopin.meituan.com/web/campus",
+      "page_size": 100,
+      "max_pages": 10,
+      "job_type": [{"code": "1", "subCode": []}],
       "required_text": "美团招聘",
       "target_keywords": [
         "2027校园招聘",
@@ -3781,10 +3788,10 @@
       "company": "美团",
       "company_type": "私企",
       "location": "北京/上海/深圳/广州等（具体岗位为准）",
-      "description": "美团2027校园招聘启动提醒；请进入美团官方招聘页核对人工智能、算法、数据、软件、后端和大模型岗位。",
-      "education": "应届毕业生，具体学历、专业及毕业时间要求以官方岗位为准",
+      "description": "美团官方应届生校园招聘岗位；当前页面同时覆盖2026秋招、2026校园招聘及2027校招等招聘窗口，请重点关注人工智能、算法、数据、软件、后端和大模型岗位。",
+      "education": "美团应届生校园招聘岗位，具体学历及毕业时间要求以官方岗位详情为准",
       "graduation_years": [2027],
-      "note": "美团招聘官网同时承载校园和社会招聘，项目只匹配正式2027届校招标识；岗位详情仍以官网公开页面为准。"
+      "note": "美团招聘官网同时承载校园和社会招聘；项目通过官方岗位接口只采集应届校招（不采集实习）岗位，招聘窗口以岗位详情及官方公告为准。"
     },
     {
       "id": "cscec_campus_2027",

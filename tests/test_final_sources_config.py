@@ -30,6 +30,11 @@ class FinalSourcesConfigTests(unittest.TestCase):
             self.assertTrue(source["target_keywords"], source_id)
             self.assertEqual(len(source["graduation_years"]), 1, source_id)
             self.assertEqual(source["graduation_years"][0], 2027, source_id)
+        self.assertEqual(
+            sources["meituan_campus_2027"]["collector"],
+            "meituan_official_campus",
+        )
+        self.assertTrue(sources["meituan_campus_2027"]["daily_monitor"])
 
 
 if __name__ == "__main__":

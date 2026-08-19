@@ -134,6 +134,190 @@ class Collector(ABC):
         raise NotImplementedError
 
 
+class MeituanCampusCollector(Collector):
+    """Collect current full-time campus roles from Meituan's official API.
+
+    The public Meituan recruitment page is a client-rendered application.  A
+    plain HTML campaign watcher therefore only sees the page shell and misses
+    the 2026 autumn/2027 campus positions that are visible in the browser.
+    This collector uses the same read-only JSON endpoint as that official
+    page, while restricting the request to the "应届校招" job type (code 1).
+    """
+
+    DEFAULT_API_URL = (
+        "https://zhaopin.meituan.com/api/official/job/getJobList"
+    )
+    DEFAULT_REFERER = "https://zhaopin.meituan.com/web/campus"
+
+    @staticmethod
+    def _decode_page(raw: bytes) -> Dict[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("美团校园招聘接口返回了无效 JSON") from exc
+        if not isinstance(payload, dict) or str(payload.get("status")) != "1":
+            raise ValueError("美团校园招聘接口返回失败状态")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("美团校园招聘接口缺少 data")
+        items = data.get("list")
+        page = data.get("page")
+        if not isinstance(items, list) or not isinstance(page, dict):
+            raise ValueError("美团校园招聘接口缺少岗位列表或分页信息")
+        return {"items": items, "page": page}
+
+    def _request_page(self, page_no: int) -> Dict[str, Any]:
+        page_size = max(1, int(self.source.get("page_size", 100)))
+        request_json = {
+            "page": {"pageNo": page_no, "pageSize": page_size},
+            "jobShareType": self.source.get("job_share_type", "1"),
+            "keywords": "",
+            "cityList": [],
+            "department": [],
+            "jfJgList": [],
+            "jobType": self.source.get(
+                "job_type", [{"code": "1", "subCode": []}]
+            ),
+            "typeCode": [],
+            "specialCode": [],
+        }
+        overrides = self.source.get("request_json", {})
+        if isinstance(overrides, dict):
+            request_json.update(overrides)
+        request_json["page"] = {
+            "pageNo": page_no,
+            "pageSize": page_size,
+        }
+        try:
+            raw = fetch_bytes(
+                self.source.get("api_url", self.DEFAULT_API_URL),
+                timeout=int(self.source.get("timeout", 20)),
+                method="POST",
+                json_body=request_json,
+                headers={
+                    "Accept": "application/json;charset=utf-8",
+                    "Origin": "https://zhaopin.meituan.com",
+                    "Referer": self.source.get(
+                        "referer", self.DEFAULT_REFERER
+                    ),
+                },
+            )
+        except Exception as exc:
+            raise ValueError("美团校园招聘接口请求失败: {}".format(exc)) from exc
+        return self._decode_page(raw)
+
+    @staticmethod
+    def _date_from_epoch(value: Any) -> str:
+        try:
+            timestamp = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if timestamp <= 0:
+            return ""
+        return datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).date().isoformat()
+
+    @staticmethod
+    def _names(value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+        names = []
+        for item in value:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return "、".join(names)
+
+    def collect(self) -> List[JobPosting]:
+        max_pages = max(1, int(self.source.get("max_pages", 10)))
+        jobs: List[JobPosting] = []
+        seen_ids = set()
+        expected_total = None
+        total_pages = None
+
+        for page_no in range(1, max_pages + 1):
+            page_data = self._request_page(page_no)
+            items = page_data["items"]
+            page = page_data["page"]
+            try:
+                current_page = int(page["pageNo"])
+                current_total = int(page["totalCount"])
+                current_total_pages = int(page["totalPage"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("美团校园招聘接口分页字段异常") from exc
+            if current_page != page_no:
+                raise ValueError("美团校园招聘接口分页页码异常")
+            if expected_total is None:
+                expected_total = current_total
+                total_pages = max(1, current_total_pages)
+                if total_pages > max_pages:
+                    raise ValueError("美团校园招聘接口分页超过安全上限")
+            elif current_total != expected_total or current_total_pages != total_pages:
+                raise ValueError("美团校园招聘接口分页总数发生变化")
+
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("美团校园招聘岗位元素结构异常")
+                external_id = str(item.get("jobUnionId") or "").strip()
+                title = str(item.get("name") or "").strip()
+                if not external_id or not title:
+                    raise ValueError("美团校园招聘岗位缺少 ID 或标题")
+                if external_id in seen_ids:
+                    continue
+                seen_ids.add(external_id)
+
+                location = self._names(item.get("cityList")) or self.source.get(
+                    "location", "待核对"
+                )
+                department = self._names(item.get("department"))
+                description_parts = [
+                    str(item.get("projectName") or "").strip(),
+                    str(item.get("jobFamily") or "").strip(),
+                    department,
+                    str(item.get("jobDuty") or "").strip(),
+                    str(item.get("jobRequirement") or "").strip(),
+                    str(item.get("highLight") or "").strip(),
+                ]
+                description = "\n".join(
+                    part for part in description_parts if part
+                )
+                values = {
+                    "external_id": external_id,
+                    "title": title,
+                    "company": self.source.get("company", "美团"),
+                    "company_type": self.source.get("company_type", "私企"),
+                    "location": location,
+                    "description": description,
+                    "education": self.source.get(
+                        "education", "美团应届生校园招聘岗位，具体要求以官方岗位详情为准"
+                    ),
+                    "graduation_years": self.source.get(
+                        "graduation_years", [2027]
+                    ),
+                    "published_at": self._date_from_epoch(
+                        item.get("refreshTime") or item.get("firstPostTime")
+                    ),
+                    "deadline": self._date_from_epoch(item.get("expiredTime")),
+                    "url": self.source.get(
+                        "url_template",
+                        self.DEFAULT_REFERER.replace(
+                            "/web/campus", "/web/position/detail"
+                        )
+                        + "?jobUnionId={jobUnionId}&jobShareType=1",
+                    ).format_map(_MissingValueDict(item)),
+                    "source_name": self.source["name"],
+                }
+                jobs.append(JobPosting.from_mapping(values))
+
+            if page_no >= total_pages:
+                break
+        else:
+            raise ValueError("美团校园招聘接口分页超过配置上限")
+        return jobs
+
+
 class FixtureJsonCollector(Collector):
     def collect(self) -> List[JobPosting]:
         path = Path(self.source["path"])
@@ -7934,6 +8118,7 @@ COLLECTOR_TYPES = {
     "beisen_portal_campaign": BeisenPortalCampaignCollector,
     "byd_campus": BydCampusCollector,
     "campaign_watch": CampaignWatchCollector,
+    "meituan_official_campus": MeituanCampusCollector,
     "ceair_campus": CeairCampusCollector,
     "cmb_campus": CmbCampusCollector,
     "csg_api": ChinaSouthernPowerGridCollector,
@@ -7971,7 +8156,7 @@ COLLECTOR_TYPES = {
 
 
 def build_collector(source: Dict[str, Any]) -> Collector:
-    collector_type = source.get("type")
+    collector_type = source.get("collector", source.get("type"))
     try:
         collector_class = COLLECTOR_TYPES[collector_type]
     except KeyError as exc:
