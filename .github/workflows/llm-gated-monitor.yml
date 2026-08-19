@@ -139,9 +139,9 @@ jobs:
           from job_radar.config import load_sources
 
           output = sys.argv[1]
-          # Campaign/catalog watches are retained in the repository but are
-          # checked separately; daily mail should not wait on hundreds of
-          # pages that do not expose structured job listings.
+          # Most campaign/catalog watches are retained in the repository but
+          # checked separately. Sources explicitly marked daily_monitor are
+          # lightweight official feeds that should participate in daily mail.
           sources = [
               source
               for source in load_sources("configs/sources.json")
