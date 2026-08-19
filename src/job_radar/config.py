@@ -3,11 +3,27 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
 
 class ConfigError(ValueError):
     pass
+
+
+def _normalize_monitoring(data: Mapping[str, Any]) -> Dict[str, Any]:
+    keywords = data.get("excluded_company_keywords", [])
+    if not isinstance(keywords, list) or not all(
+        isinstance(item, str) and item.strip() for item in keywords
+    ):
+        raise ConfigError(
+            "监控配置 excluded_company_keywords 必须是字符串数组"
+        )
+    return {
+        "daily_scan_all": bool(data.get("daily_scan_all", False)),
+        "excluded_company_keywords": list(
+            dict.fromkeys(item.strip() for item in keywords)
+        ),
+    }
 
 
 def load_monitoring(path: str = "configs/monitoring.json") -> Dict[str, Any]:
@@ -19,21 +35,12 @@ def load_monitoring(path: str = "configs/monitoring.json") -> Dict[str, Any]:
     workflows and local runs apply exactly the same rules.
     """
 
+    if isinstance(path, Mapping):
+        return _normalize_monitoring(path)
     config_path = Path(path)
     if not config_path.exists():
         return {"daily_scan_all": False, "excluded_company_keywords": []}
-    data = load_json(path)
-    keywords = data.get("excluded_company_keywords", [])
-    if not isinstance(keywords, list) or not all(
-        isinstance(item, str) and item.strip() for item in keywords
-    ):
-        raise ConfigError(
-            "监控配置 excluded_company_keywords 必须是非空字符串数组"
-        )
-    return {
-        "daily_scan_all": bool(data.get("daily_scan_all", False)),
-        "excluded_company_keywords": list(dict.fromkeys(item.strip() for item in keywords)),
-    }
+    return _normalize_monitoring(load_json(path))
 
 
 def _excluded_company_match(value: Any, keywords: Iterable[str]) -> bool:
@@ -60,6 +67,17 @@ def filter_sources_for_monitoring(
     """Remove sources for companies that should no longer be scanned/notified."""
 
     return [source for source in sources if not source_is_excluded(source, monitoring)]
+
+
+def job_is_excluded(job: Any, monitoring: Dict[str, Any]) -> bool:
+    """Return whether a collected job belongs to a user's excluded company."""
+
+    keywords = monitoring.get("excluded_company_keywords", [])
+    haystack = " ".join(
+        str(getattr(job, field, "") or "")
+        for field in ("company", "source_name")
+    )
+    return _excluded_company_match(haystack, keywords)
 
 
 def _campaign_fallback(source: Dict[str, Any]) -> Dict[str, str]:

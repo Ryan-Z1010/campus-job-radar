@@ -150,6 +150,35 @@ python -m job_radar multi-monitor \
 
 当前 `multi-monitor` 是本地多人版，适合你和同学共享一份公司池。后续做在线服务时，再把 `users.local.json` 替换为登录、数据库、简历上传和用户级权限；岗位采集仍保持全局一次，匹配和通知按用户展开。
 
+需要大模型分析时使用多人命令：
+
+```bash
+python -m job_radar llm-multi-analyze \
+  --users configs/users.local.json \
+  --sources configs/sources.json \
+  --max-jobs 50 \
+  --notification-preview-dir reports/llm/multi/notification-preview
+```
+
+每个用户配置可以在 `monitoring` 字段中指定自己的已投公司文件。也可以在 CI 的
+`USERS_CONFIG_JSON` Secret 中直接使用内嵌对象：
+
+```json
+{
+  "users": [
+    {
+      "id": "ryan",
+      "email": "ryan@example.com",
+      "profile": {"graduation": "2026-11", "preferred_cities": ["广州"], "company_type_priority": ["央企", "国企"]},
+      "monitoring": {"excluded_company_keywords": ["腾讯", "美团"]}
+    }
+  ]
+}
+```
+
+岗位来源只采集一次；每个用户随后使用自己的画像、已投公司、LLM 缓存、通知数据库和邮箱。
+因此一个用户排除腾讯不会影响另一个用户接收腾讯岗位。内嵌配置包含邮箱和画像信息，不能提交到仓库。
+
 ## 大模型多智能体分析（可选）
 
 `llm-analyze` 在确定性采集和硬性资格判断之后，依次运行
@@ -182,12 +211,12 @@ python -m job_radar llm-analyze \
 
 ### 每日全量扫描与已投公司排除
 
-定时工作流会读取 `configs/monitoring.json`。当前设置为每天扫描公司池中除
+单用户定时模式会读取 `configs/monitoring.json`。当前设置为每天扫描公司池中除
 腾讯、美团、毕马威、快手、滴滴、大疆、字节、阿里巴巴、小鹏、小米、中兴、网易和招商局
 之外的全部来源；这些已投公司的来源不会采集，聚合来源偶尔返回的同名岗位也会在发送前再次排除。
 每日最多将确定性筛选后的 50 个岗位交给 LLM 分析，邮件仍按岗位指纹去重。
 以后投递新公司时，只需把公司中文名或英文别名加入该文件的
-`excluded_company_keywords` 数组即可。
+`excluded_company_keywords` 数组即可。多人 CI 模式使用每个用户自己的 `monitoring`，不会读取这份全局单用户排除表。
 
 ## 使用自己的偏好
 

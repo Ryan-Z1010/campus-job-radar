@@ -18,6 +18,7 @@
 - `ARK_BASE_URL`（可选，默认火山方舟北京 Base URL）
 - `ARK_MODEL`（可选，默认 `doubao-seed-2-0-lite-260428`）
 - `LLM_PROFILE_JSON`（推荐；脱敏后的画像 JSON，不包含姓名、邮箱、电话或简历原文；你的画像应包含 `accepted_recruitment_windows: ["2026秋招", "2027春招", "2027届", "2027校招"]`）
+- `USERS_CONFIG_JSON`（可选；启用多人 LLM 模式后使用，包含每位用户的 `id`、`email`、内嵌 `profile` 和 `monitoring`；设置后会优先于 `LLM_PROFILE_JSON`）
 
 邮箱应使用应用专用密码。LLM 工作流只有在 Ark API、脱敏画像和以上邮件配置均完整时才发送，否则只生成预览。
 
@@ -27,11 +28,11 @@
 
 ## 4. 数据持久化
 
-工作流用 GitHub Actions cache 保存 `data/llm_analysis.sqlite3` 分析缓存、`data/llm_notification.sqlite3` 推荐通知指纹和 `data/llm_review_notification_v2.sqlite3` 人工复核通知指纹，并上传当次岗位报告和通知预览 artifact。人工复核去重库使用 v2 是为了隔离旧版“确定性队列直接通知”的指纹；通知指纹只有在 SMTP 发送成功后才写入。Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
+工作流用 GitHub Actions cache 保存单用户的 `data/llm_*.sqlite3`，多人模式则保存每位用户独立的 `data/users/<id>/llm_*.sqlite3` 分析缓存和通知指纹，并上传当次岗位报告和通知预览 artifact。人工复核去重库使用 v2 是为了隔离旧版“确定性队列直接通知”的指纹；通知指纹只有在 SMTP 发送成功后才写入。Cache 可能被清理，因此它适合作为 MVP 去重状态，不应视为永久数据库。后续公开服务建议迁移到托管数据库。
 
 ## 5. 调度注意事项
 
-`LLM gated job monitor` 工作流负责在悉尼时间每天 07:00 左右定时执行 LLM 门槛分析（允许 GitHub 延迟时在 06:00–09:00 窗口内启动，并通过时区守卫适配夏令时）：默认最多分析 50 个岗位，并优先处理确定性“待核对/需核对”队列；以 16 个并行采集 worker 扫描公司池，单次工作流最长运行 60 分钟，生成报告和通知预览。只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和 LLM 复核后仍不确定的人工复核摘要。`LLM_PROFILE_JSON` 存在时只在 Runner 临时目录使用，不会上传到 Artifact；相同岗位的通知仍由指纹库去重。
+`LLM gated job monitor` 工作流负责在悉尼时间每天 07:00 左右定时执行 LLM 门槛分析（允许 GitHub 延迟时在 06:00–09:00 窗口内启动，并通过时区守卫适配夏令时）：默认最多分析 50 个岗位，并优先处理确定性“待核对/需核对”队列；以 64 个并行采集 worker 扫描公司池，单次工作流最长运行 60 分钟，生成报告和通知预览。只有定时运行或手动显式勾选 `send_email`，且 SMTP Secrets 完整时，才会发送通过门槛的岗位和 LLM 复核后仍不确定的人工复核摘要。设置 `USERS_CONFIG_JSON` 后会先共享采集，再按用户画像和 `monitoring` 分别分析、去重和发送；未设置时继续使用 `LLM_PROFILE_JSON` 的单用户回退模式。Secret 只在 Runner 临时目录使用，不会上传到 Artifact；相同岗位的通知仍由各用户自己的指纹库去重。
 `reports/llm/latest.json` 同时记录确定性采集的来源统计和来源错误，便于区分“当前没有岗位”和“来源暂时不可访问”。
 
 首次验证或排查来源时，建议手动运行并填写 `source_id=demo_official_jobs`、`include_demo=true`、`max_jobs=1`、`send_email=false`，这样只验证一条演示岗位的 LLM 链路，不必等待全部招聘来源采集。正式定时运行不填写 `source_id`，仍会扫描所有启用的真实来源。

@@ -28,6 +28,11 @@ from .orchestrator import (
     write_llm_notification_preview,
     write_llm_report,
 )
+from .multi_user import (
+    MultiUserLlmOrchestrator,
+    MultiUserLlmRunResult,
+    MultiUserLlmUserResult,
+)
 
 __all__ = [
     "CriticAgent",
@@ -40,6 +45,9 @@ __all__ = [
     "LlmRecruitmentOrchestrator",
     "LlmResponse",
     "LlmRunResult",
+    "MultiUserLlmOrchestrator",
+    "MultiUserLlmRunResult",
+    "MultiUserLlmUserResult",
     "deterministic_review_jobs",
     "manual_review_analyses",
     "notification_jobs",

@@ -3,14 +3,18 @@
     {
       "id": "student-a",
       "profile": "configs/profile.local.student-a.json",
+      "monitoring": "configs/monitoring.local.student-a.json",
       "email": "student-a@example.com",
       "database": "data/users/student-a/job_radar.db",
       "report_dir": "reports/users/student-a",
-      "trace_file": "reports/users/student-a/agent-trace.json"
+      "trace_file": "reports/users/student-a/agent-trace.json",
+      "llm_report": "reports/llm/users/student-a/latest.json",
+      "notification_preview_dir": "reports/llm/users/student-a/notification-preview"
     },
     {
       "id": "student-b",
       "profile": "configs/profile.local.student-b.json",
+      "monitoring": "configs/monitoring.local.student-b.json",
       "email": "student-b@example.com"
     }
   ]

@@ -75,6 +75,7 @@ jobs:
             data/llm_analysis.sqlite3
             data/llm_notification.sqlite3
             data/llm_review_notification_v2.sqlite3
+            data/users/
           key: llm-analysis-db-${{ github.run_id }}
           restore-keys: |
             llm-analysis-db-
@@ -85,6 +86,7 @@ jobs:
           ARK_BASE_URL: ${{ secrets.ARK_BASE_URL }}
           ARK_MODEL: ${{ secrets.ARK_MODEL }}
           LLM_PROFILE_JSON: ${{ secrets.LLM_PROFILE_JSON }}
+          USERS_CONFIG_JSON: ${{ secrets.USERS_CONFIG_JSON }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -113,23 +115,34 @@ jobs:
             profile_path="${RUNNER_TEMP}/profile.ci.json"
             printf '%s' "$LLM_PROFILE_JSON" > "$profile_path"
           fi
+          users_path=""
+          multi_user_mode="false"
+          if [ -n "${USERS_CONFIG_JSON:-}" ]; then
+            users_path="${RUNNER_TEMP}/users.ci.json"
+            printf '%s' "$USERS_CONFIG_JSON" > "$users_path"
+            multi_user_mode="true"
+            echo "启用多人 LLM 模式：共享采集后按用户分别分析和通知。"
+          fi
 
           sources_path="configs/sources.json"
           monitoring_path="${MONITORING_CONFIG:-configs/monitoring.json}"
           if [ "${AGENT_SWEEP:-false}" = "true" ]; then
             sources_path="${RUNNER_TEMP}/sources.state-agent.json"
-            python - "$sources_path" <<'PY'
+            python - "$sources_path" "$multi_user_mode" <<'PY'
           import json
           import sys
           from job_radar.config import filter_sources_for_monitoring, load_monitoring, load_sources
 
           output = sys.argv[1]
-          monitoring = load_monitoring("configs/monitoring.json")
+          multi_user = len(sys.argv) > 2 and sys.argv[2] == "true"
+          all_sources = load_sources("configs/sources.json")
+          if not multi_user:
+              all_sources = filter_sources_for_monitoring(
+                  all_sources, load_monitoring("configs/monitoring.json")
+              )
           sources = [
               source
-              for source in filter_sources_for_monitoring(
-                  load_sources("configs/sources.json"), monitoring
-              )
+              for source in all_sources
               if source.get("company_type") in {"央企", "国企"}
           ]
           with open(output, "w", encoding="utf-8") as handle:
@@ -138,18 +151,19 @@ jobs:
           PY
           elif [ "${GITHUB_EVENT_NAME:-}" = "schedule" ] || [ "${SOURCE_MODE:-live}" = "live" ]; then
             sources_path="${RUNNER_TEMP}/sources.live.json"
-            python - "$sources_path" "${GITHUB_EVENT_NAME:-}" <<'PY'
+            python - "$sources_path" "${GITHUB_EVENT_NAME:-}" "$multi_user_mode" <<'PY'
           import json
           import sys
           from job_radar.config import filter_sources_for_monitoring, load_monitoring, load_sources
 
           output = sys.argv[1]
           scheduled = len(sys.argv) > 2 and sys.argv[2] == "schedule"
+          multi_user = len(sys.argv) > 3 and sys.argv[3] == "true"
+          all_sources = load_sources("configs/sources.json")
           monitoring = load_monitoring("configs/monitoring.json")
-          all_sources = filter_sources_for_monitoring(
-              load_sources("configs/sources.json"), monitoring
-          )
-          if scheduled and monitoring.get("daily_scan_all"):
+          if not multi_user:
+              all_sources = filter_sources_for_monitoring(all_sources, monitoring)
+          if scheduled and (multi_user or monitoring.get("daily_scan_all")):
               # The scheduled monitor intentionally checks every remaining
               # official source; already-applied companies are removed before
               # collection and again at the job level in the CLI.
@@ -171,26 +185,36 @@ jobs:
             exit 2
           fi
 
-          args=(
-            llm-analyze
-            --profile "$profile_path"
-            --sources "$sources_path"
-            # Daily collection is full-pool; analyze up to 50 best candidates
-            # so newly opened AI/data roles are not silently left behind.
-            --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 50 || echo "${MAX_JOBS:-50}")"
-            --monitoring "$monitoring_path"
-            # The source pool now contains ~1,000 official pages. Collection
-            # is I/O-bound, so a larger bounded pool keeps the daily run from
-            # spending tens of minutes waiting on slow/blocked pages.
-            --collection-workers 64
-            --analysis-workers 4
-            --notify-min-score 70
-            --output reports/llm/latest.json
-            --cache-database data/llm_analysis.sqlite3
-            --notification-database data/llm_notification.sqlite3
-            --review-notification-database data/llm_review_notification_v2.sqlite3
-            --notification-preview-dir reports/llm/notification-preview
-          )
+          if [ "$multi_user_mode" = "true" ]; then
+            args=(
+              llm-multi-analyze
+              --users "$users_path"
+              --users-root "$GITHUB_WORKSPACE"
+              --sources "$sources_path"
+              --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 50 || echo "${MAX_JOBS:-50}")"
+              --collection-workers 64
+              --analysis-workers 4
+              --notify-min-score 70
+              --output reports/llm/multi/latest.json
+              --notification-preview-dir reports/llm/multi/notification-preview
+            )
+          else
+            args=(
+              llm-analyze
+              --profile "$profile_path"
+              --sources "$sources_path"
+              --max-jobs "$([ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && echo 50 || echo "${MAX_JOBS:-50}")"
+              --monitoring "$monitoring_path"
+              --collection-workers 64
+              --analysis-workers 4
+              --notify-min-score 70
+              --output reports/llm/latest.json
+              --cache-database data/llm_analysis.sqlite3
+              --notification-database data/llm_notification.sqlite3
+              --review-notification-database data/llm_review_notification_v2.sqlite3
+              --notification-preview-dir reports/llm/notification-preview
+            )
+          fi
           if [ "${INCLUDE_DEMO:-false}" = "true" ]; then
             args+=(--include-demo)
           fi
@@ -208,13 +232,17 @@ jobs:
             )
           fi
           if [ "${RESEND_ALL:-false}" = "true" ]; then
-            args+=(
-              --notification-database "${RUNNER_TEMP}/agent-sweep-notification.sqlite3"
-              --review-notification-database "${RUNNER_TEMP}/agent-sweep-review.sqlite3"
-            )
+            if [ "$multi_user_mode" = "true" ]; then
+              args+=(--resend-all)
+            else
+              args+=(
+                --notification-database "${RUNNER_TEMP}/agent-sweep-notification.sqlite3"
+                --review-notification-database "${RUNNER_TEMP}/agent-sweep-review.sqlite3"
+              )
+            fi
           fi
           if [ "${ALLOW_EMAIL:-false}" = "true" ] \
-            && [ -n "${ALERT_EMAIL:-}" ] \
+            && { [ "$multi_user_mode" = "true" ] || [ -n "${ALERT_EMAIL:-}" ]; } \
             && [ -n "${SMTP_HOST:-}" ] \
             && [ -n "${SMTP_USERNAME:-}" ] \
             && [ -n "${SMTP_PASSWORD:-}" ]; then
@@ -230,6 +258,7 @@ jobs:
             data/llm_analysis.sqlite3
             data/llm_notification.sqlite3
             data/llm_review_notification_v2.sqlite3
+            data/users/
           key: llm-analysis-db-${{ github.run_id }}
 
       - name: Upload LLM reports

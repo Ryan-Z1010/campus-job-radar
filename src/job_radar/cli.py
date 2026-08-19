@@ -262,6 +262,75 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-demo", action="store_true", help="显式启用演示岗位"
     )
 
+    llm_multi_analyze = subparsers.add_parser(
+        "llm-multi-analyze",
+        help="共享一次岗位采集，再按用户画像和已投公司记录分别分析并通知",
+    )
+    llm_multi_analyze.add_argument(
+        "--users", default="configs/users.local.json", help="多人私有配置文件"
+    )
+    llm_multi_analyze.add_argument(
+        "--users-root",
+        help="多人配置中相对路径的根目录；CI 临时 Secret 通常传仓库根目录",
+    )
+    llm_multi_analyze.add_argument("--sources", default="configs/sources.json")
+    llm_multi_analyze.add_argument("--env-file", default=".env")
+    llm_multi_analyze.add_argument(
+        "--base-url",
+        help="火山方舟 Base URL；默认读取 ARK_BASE_URL/DOUBAO_BASE_URL",
+    )
+    llm_multi_analyze.add_argument(
+        "--output",
+        default="reports/llm/multi/latest.json",
+        help="保存多人运行汇总轨迹",
+    )
+    llm_multi_analyze.add_argument(
+        "--notification-preview-dir",
+        help="写入各用户通知预览的根目录；发送邮件时必填",
+    )
+    llm_multi_analyze.add_argument(
+        "--send-email",
+        action="store_true",
+        help="发送各用户通过门槛的岗位和人工复核摘要",
+    )
+    llm_multi_analyze.add_argument(
+        "--no-cache", action="store_true", help="跳过所有用户的 LLM 缓存"
+    )
+    llm_multi_analyze.add_argument(
+        "--resend-all",
+        action="store_true",
+        help="忽略各用户历史通知去重，重新发送全部匹配岗位",
+    )
+    llm_multi_analyze.add_argument(
+        "--source", action="append", help="只运行指定来源 ID，可重复传入"
+    )
+    llm_multi_analyze.add_argument(
+        "--job-keyword",
+        action="append",
+        help="只分析标题、JD、学历或来源中包含任一关键词的岗位",
+    )
+    llm_multi_analyze.add_argument(
+        "--max-jobs", type=int, default=50, help="每位用户最多分析的岗位数"
+    )
+    llm_multi_analyze.add_argument(
+        "--notify-min-score", type=int, default=70, help="外企/私企 LLM 通知最低分"
+    )
+    llm_multi_analyze.add_argument(
+        "--collection-workers", type=int, default=4, help="共享采集并行数"
+    )
+    llm_multi_analyze.add_argument(
+        "--analysis-workers", type=int, default=1, help="每位用户的 LLM 并行数"
+    )
+    llm_multi_analyze.add_argument(
+        "--model", help="豆包模型或推理接入点；默认读取 ARK_MODEL/DOUBAO_MODEL"
+    )
+    llm_multi_analyze.add_argument(
+        "--timeout", type=int, default=60, help="单次大模型请求超时秒数"
+    )
+    llm_multi_analyze.add_argument(
+        "--include-demo", action="store_true", help="显式启用演示岗位"
+    )
+
     audit = subparsers.add_parser("audit", help="检查招聘来源是否可访问")
     audit.add_argument("--sources", default="configs/sources.json")
     audit.add_argument("--timeout", type=int, default=15)
@@ -504,6 +573,138 @@ def main(argv=None) -> int:
             for error in deterministic.source_errors:
                 print("来源错误: {}".format(error), file=sys.stderr)
             return 2 if result.failed and result.analyzed == 0 else 0
+        if args.command == "llm-multi-analyze":
+            from .llm import (
+                DoubaoChatClient,
+                MultiUserLlmOrchestrator,
+                send_llm_notification_email,
+                send_llm_review_notification_email,
+                write_llm_notification_preview,
+                write_llm_report,
+                write_llm_review_preview,
+            )
+
+            if args.send_email and not args.notification_preview_dir:
+                raise ConfigError(
+                    "--send-email 必须同时指定 --notification-preview-dir"
+                )
+            load_dotenv(args.env_file)
+            users = load_users(args.users, root=args.users_root)
+            api_key = (
+                os.environ.get("ARK_API_KEY")
+                or os.environ.get("DOUBAO_API_KEY")
+                or ""
+            )
+            if not api_key:
+                raise ConfigError("ARK_API_KEY 未配置，无法运行多人 LLM 分析")
+            base_url = (
+                args.base_url
+                or os.environ.get("ARK_BASE_URL")
+                or os.environ.get("DOUBAO_BASE_URL")
+                or DoubaoChatClient.default_base_url
+            )
+            model = (
+                args.model
+                or os.environ.get("ARK_MODEL")
+                or os.environ.get("DOUBAO_MODEL")
+                or "doubao-seed-2-0-lite-260428"
+            )
+            result = MultiUserLlmOrchestrator().run(
+                users=users,
+                sources=load_sources(args.sources),
+                client=DoubaoChatClient(
+                    api_key=api_key,
+                    model=model,
+                    timeout=args.timeout,
+                    base_url=base_url,
+                ),
+                include_demo=args.include_demo,
+                source_ids=args.source,
+                max_jobs=args.max_jobs,
+                notify_min_score=args.notify_min_score,
+                collection_workers=args.collection_workers,
+                analysis_workers=args.analysis_workers,
+                no_cache=args.no_cache,
+                job_keywords=args.job_keyword,
+            )
+            aggregate_users = []
+            for user_result in result.users:
+                user = user_result.user
+                user_llm = user_result.result
+                write_llm_report(user_llm, user.llm_report)
+                preview_dir = user.notification_preview_dir
+                if args.notification_preview_dir:
+                    preview_dir = str(
+                        Path(args.notification_preview_dir) / user.user_id
+                    )
+                write_llm_notification_preview(user_llm, preview_dir)
+                write_llm_review_preview(
+                    user_llm, str(Path(preview_dir) / "manual-review")
+                )
+                sent_count = 0
+                review_sent_count = 0
+                if args.send_email:
+                    sender = lambda subject, html, recipient=user.email: send_email(
+                        subject, html, recipient=recipient
+                    )
+                    notification_db = (
+                        None if args.resend_all else user.notification_database
+                    )
+                    review_db = (
+                        None
+                        if args.resend_all
+                        else user.review_notification_database
+                    )
+                    sent_count = send_llm_notification_email(
+                        user_llm, sender, notification_db
+                    )
+                    review_sent_count = send_llm_review_notification_email(
+                        user_llm, sender, review_db
+                    )
+                aggregate_users.append(
+                    {
+                        "user_id": user.user_id,
+                        "counts": {
+                            "deterministic": dict(user_result.deterministic_counts),
+                            "llm": user_llm.to_dict().get("counts", {}),
+                            "notification_sent": sent_count,
+                            "review_notification_sent": review_sent_count,
+                        },
+                        "report": user.llm_report,
+                        "notification_preview": preview_dir,
+                    }
+                )
+                print(
+                    "用户 {0} | 来源 {1} | 采集岗位 {2} | LLM选中 {3} | "
+                    "可提醒 {4} | 推荐邮件 {5} | 复核邮件 {6}".format(
+                        user.user_id,
+                        user_result.deterministic_counts.get("source_total", 0),
+                        user_result.deterministic_counts.get("collected", 0),
+                        user_llm.selected,
+                        user_llm.notify_eligible,
+                        sent_count,
+                        review_sent_count,
+                    )
+                )
+                for error in user_result.source_errors:
+                    print("用户 {} 来源错误: {}".format(user.user_id, error), file=sys.stderr)
+            aggregate = {
+                "orchestrator": "MultiUserLlmOrchestrator",
+                "shared_collection": {
+                    "source_total": result.source_total,
+                    "collected": result.collected,
+                    "source_errors": list(result.source_errors),
+                },
+                "users": aggregate_users,
+            }
+            output_path = Path(args.output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print("多人 LLM 汇总报告: {}".format(output_path))
+            return 2 if result.source_errors and result.collected == 0 else 0
         if args.command == "agent-run":
             result = OrchestratorAgent().run(
                 profile=load_profile(args.profile),

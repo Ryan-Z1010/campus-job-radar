@@ -23,7 +23,14 @@ from .agents.notification import NotificationAgent
 from .agents.review import ReviewAgent
 from .agents.storage import StorageAgent
 from .agents.types import AgentResult, AgentStatus, AgentTrace
-from .config import ConfigError, load_json, load_profile
+from .config import (
+    ConfigError,
+    job_is_excluded,
+    load_json,
+    load_monitoring,
+    load_profile,
+    source_is_excluded,
+)
 from .models import JobPosting, utc_now_iso
 
 
@@ -40,6 +47,14 @@ class UserSpec:
     database: str
     report_dir: str
     trace_file: str
+    monitoring_path: str = ""
+    llm_report: str = ""
+    notification_preview_dir: str = ""
+    llm_cache_database: str = ""
+    notification_database: str = ""
+    review_notification_database: str = ""
+    profile_data: Optional[Dict[str, Any]] = None
+    monitoring_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -134,7 +149,7 @@ def _resolve_path(value: str, root: Path) -> str:
     return str(path)
 
 
-def load_users(path: str) -> List[UserSpec]:
+def load_users(path: str, root: Optional[str] = None) -> List[UserSpec]:
     """Load and validate a private users registry.
 
     The file is intentionally separate from ``sources.json``.  It should be
@@ -147,7 +162,7 @@ def load_users(path: str) -> List[UserSpec]:
     if not isinstance(raw_users, list) or not raw_users:
         raise ConfigError("多人配置必须包含非空 users 数组: {}".format(config_path))
 
-    root = _repo_root(config_path)
+    root_path = Path(root).resolve() if root else _repo_root(config_path)
     seen = set()
     users: List[UserSpec] = []
     for raw in raw_users:
@@ -159,32 +174,129 @@ def load_users(path: str) -> List[UserSpec]:
         if user_id in seen:
             raise ConfigError("多人配置存在重复用户 id: {}".format(user_id))
         seen.add(user_id)
-        profile_path = str(raw.get("profile", raw.get("profile_path", ""))).strip()
+        profile_value = raw.get("profile", raw.get("profile_path", ""))
+        profile_data = profile_value if isinstance(profile_value, dict) else None
+        profile_path = (
+            str(profile_value).strip() if isinstance(profile_value, str) else ""
+        )
         email = str(raw.get("email", "")).strip()
-        if not profile_path:
+        if not profile_path and profile_data is None:
             raise ConfigError("用户 {} 缺少 profile 路径".format(user_id))
         if not email or "@" not in email:
             raise ConfigError("用户 {} 缺少有效 email".format(user_id))
+        monitoring_value = raw.get(
+            "monitoring", raw.get("monitoring_path", "")
+        )
+        monitoring_data = (
+            dict(monitoring_value) if isinstance(monitoring_value, dict) else None
+        )
+        monitoring_path = (
+            str(monitoring_value).strip()
+            if isinstance(monitoring_value, str)
+            else ""
+        )
         users.append(
             UserSpec(
                 user_id=user_id,
-                profile_path=_resolve_path(profile_path, root),
+                profile_path=_resolve_path(profile_path, root_path) if profile_path else "",
                 email=email,
                 database=_resolve_path(
                     str(raw.get("database", "data/users/{}/job_radar.db".format(user_id))),
-                    root,
+                    root_path,
                 ),
                 report_dir=_resolve_path(
                     str(raw.get("report_dir", "reports/users/{}".format(user_id))),
-                    root,
+                    root_path,
                 ),
                 trace_file=_resolve_path(
                     str(raw.get("trace_file", "reports/users/{}/agent-trace.json".format(user_id))),
-                    root,
+                    root_path,
                 ),
+                monitoring_path=_resolve_path(monitoring_path, root_path)
+                if monitoring_path
+                else "",
+                llm_report=_resolve_path(
+                    str(
+                        raw.get(
+                            "llm_report",
+                            "reports/llm/users/{}/latest.json".format(user_id),
+                        )
+                    ),
+                    root_path,
+                ),
+                notification_preview_dir=_resolve_path(
+                    str(
+                        raw.get(
+                            "notification_preview_dir",
+                            "reports/llm/users/{}/notification-preview".format(
+                                user_id
+                            ),
+                        )
+                    ),
+                    root_path,
+                ),
+                llm_cache_database=_resolve_path(
+                    str(
+                        raw.get(
+                            "llm_cache_database",
+                            "data/users/{}/llm_analysis.sqlite3".format(user_id),
+                        )
+                    ),
+                    root_path,
+                ),
+                notification_database=_resolve_path(
+                    str(
+                        raw.get(
+                            "notification_database",
+                            "data/users/{}/llm_notification.sqlite3".format(
+                                user_id
+                            ),
+                        )
+                    ),
+                    root_path,
+                ),
+                review_notification_database=_resolve_path(
+                    str(
+                        raw.get(
+                            "review_notification_database",
+                            "data/users/{}/llm_review_notification.sqlite3".format(
+                                user_id
+                            ),
+                        )
+                    ),
+                    root_path,
+                ),
+                profile_data=profile_data,
+                monitoring_data=monitoring_data,
             )
         )
     return users
+
+
+def load_user_profile(user: UserSpec) -> Dict[str, Any]:
+    """Load a user's profile from either a local path or an inline CI object."""
+
+    if user.profile_data is not None:
+        required = ["graduation", "preferred_cities", "company_type_priority"]
+        missing = [key for key in required if key not in user.profile_data]
+        if missing:
+            raise ConfigError(
+                "用户 {} 的 profile 缺少字段: {}".format(
+                    user.user_id, ", ".join(missing)
+                )
+            )
+        return dict(user.profile_data)
+    return load_profile(user.profile_path)
+
+
+def load_user_monitoring(user: UserSpec) -> Dict[str, Any]:
+    """Load a user's applied-company exclusions from path or inline object."""
+
+    if user.monitoring_data is not None:
+        return load_monitoring(user.monitoring_data)
+    if user.monitoring_path:
+        return load_monitoring(user.monitoring_path)
+    return {"daily_scan_all": False, "excluded_company_keywords": []}
 
 
 def _clone_job(job: JobPosting) -> JobPosting:
@@ -266,7 +378,8 @@ class MultiUserOrchestrator:
         shared_errors: Sequence[str],
         dry_run: bool,
     ) -> UserRunResult:
-        profile = load_profile(user.profile_path)
+        profile = load_user_profile(user)
+        monitoring = load_user_monitoring(user)
         result = UserRunResult(
             user_id=user.user_id,
             email=user.email,
@@ -276,6 +389,8 @@ class MultiUserOrchestrator:
         )
         reviewed_jobs: List[JobPosting] = []
         for source, collection in pairs:
+            if source_is_excluded(source, monitoring):
+                continue
             source_id = str(source.get("id", ""))
             source_name = str(source.get("name", source_id))
             result.collected += len(collection.jobs)
@@ -288,7 +403,11 @@ class MultiUserOrchestrator:
                 continue
 
             eligibility = self.eligibility_agent.run(
-                [_clone_job(job) for job in collection.jobs],
+                [
+                    _clone_job(job)
+                    for job in collection.jobs
+                    if not job_is_excluded(job, monitoring)
+                ],
                 profile,
                 source_id=source_id,
             )
